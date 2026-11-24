@@ -3,7 +3,7 @@ FROM node:22-alpine AS frontend
 WORKDIR /app
 RUN npm install -g pnpm@10.26.0
 
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
 COPY apps/desktop/package.json apps/desktop/
 COPY apps/mobile/package.json apps/mobile/

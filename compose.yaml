@@ -1,0 +1,9 @@
+services:
+  scripta:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - STATIC_DIR=/app/dist
+    restart: unless-stopped
