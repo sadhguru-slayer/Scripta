@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Scripta — Spike 02: Isotropic Phone-to-Desktop Coordinate Mapping</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f172a;
+      color: #e2e8f0;
+      font-family: system-ui, -apple-system, sans-serif;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    button {
+      background: #1e293b; color: #f8fafc; border: 1px solid #475569;
+      padding: 6px 12px; border-radius: 6px; cursor: pointer;
+    }
+    .stage { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; }
+    .panel { display: flex; flex-direction: column; gap: 8px; }
+    canvas {
+      background: #020617;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      touch-action: none;
+    }
+  </style>
+</head>
+<body>
+  <h3>Scripta — Spike 02: Aspect-Locked Mapping (Draw on Phone, Watch Desktop)</h3>
+  <div class="controls">
+    <button id="orientBtn">Phone: Portrait (9:16)</button>
+    <button id="stretchBtn">Mapping: Isotropic (Locked)</button>
+    <button id="clearBtn">Clear</button>
+    <span style="font-size:13px; color:#94a3b8;">
+      Toggle "Mapping" to see why naive 0..1 stretching squashes circles.
+    </span>
+  </div>
+
+  <div class="stage">
+    <div class="panel">
+      <strong>Phone Pad</strong>
+      <canvas id="phone" width="225" height="400"></canvas>
+    </div>
+    <div class="panel">
+      <strong>Desktop Canvas (16:9) — Dashed Box = Active Tablet Frame</strong>
+      <canvas id="desktop" width="720" height="405"></canvas>
+    </div>
+  </div>
+
+  <script>
+    const phone = document.getElementById('phone');
+    const pCtx = phone.getContext('2d');
+    const desktop = document.getElementById('desktop');
+    const dCtx = desktop.getContext('2d');
+
+    let isPortrait = true;
+    let isIsotropic = true;
+    let drawing = false;
+    let currentStroke = [];
+    const strokes = []; // Stored as normalized phone coords { nx, ny }
+
+    function getActiveFrame() {
+      if (!isIsotropic) {
+        return { x: 20, y: 20, w: desktop.width - 40, h: desktop.height - 40 };
+      }
+      const phoneRatio = phone.width / phone.height;
+      const maxH = desktop.height - 40;
+      const maxW = desktop.width - 40;
+      let w = maxH * phoneRatio;
+      let h = maxH;
+      if (w > maxW) {
+        w = maxW;
+        h = maxW / phoneRatio;
+      }
+      return {
+        x: (desktop.width - w) / 2,
+        y: (desktop.height - h) / 2,
+        w,
+        h,
+      };
+    }
+
+    function render() {
+      pCtx.clearRect(0, 0, phone.width, phone.height);
+      dCtx.clearRect(0, 0, desktop.width, desktop.height);
+
+      const frame = getActiveFrame();
+      dCtx.save();
+      dCtx.strokeStyle = '#475569';
+      dCtx.setLineDash([6, 6]);
+      dCtx.strokeRect(frame.x, frame.y, frame.w, frame.h);
+      dCtx.restore();
+
+      const all = currentStroke.length ? [...strokes, currentStroke] : strokes;
+      for (const s of all) {
+        if (s.length < 2) continue;
+
+        pCtx.strokeStyle = '#38bdf8';
+        pCtx.lineWidth = 3;
+        pCtx.lineCap = 'round';
+        pCtx.beginPath();
+        s.forEach((pt, i) => {
+          const x = pt.nx * phone.width;
+          const y = pt.ny * phone.height;
+          i === 0 ? pCtx.moveTo(x, y) : pCtx.lineTo(x, y);
+        });
+        pCtx.stroke();
+
+        dCtx.strokeStyle = '#38bdf8';
+        dCtx.lineWidth = 3;
+        dCtx.lineCap = 'round';
+        dCtx.beginPath();
+        s.forEach((pt, i) => {
+          const x = frame.x + pt.nx * frame.w;
+          const y = frame.y + pt.ny * frame.h;
+          i === 0 ? dCtx.moveTo(x, y) : dCtx.lineTo(x, y);
+        });
+        dCtx.stroke();
+      }
+    }
+
+    phone.addEventListener('pointerdown', (e) => {
+      drawing = true;
+      const rect = phone.getBoundingClientRect();
+      currentStroke = [{
+        nx: (e.clientX - rect.left) / rect.width,
+        ny: (e.clientY - rect.top) / rect.height,
+      }];
+      render();
+    });
+
+    phone.addEventListener('pointermove', (e) => {
+      if (!drawing) return;
+      const rect = phone.getBoundingClientRect();
+      currentStroke.push({
+        nx: (e.clientX - rect.left) / rect.width,
+        ny: (e.clientY - rect.top) / rect.height,
+      });
+      render();
+    });
+
+    window.addEventListener('pointerup', () => {
+      if (!drawing) return;
+      drawing = false;
+      strokes.push(currentStroke);
+      currentStroke = [];
+      render();
+    });
+
+    document.getElementById('orientBtn').addEventListener('click', (e) => {
+      isPortrait = !isPortrait;
+      phone.width = isPortrait ? 225 : 400;
+      phone.height = isPortrait ? 400 : 225;
+      e.target.textContent = isPortrait ? 'Phone: Portrait (9:16)' : 'Phone: Landscape (16:9)';
+      render();
+    });
+
+    document.getElementById('stretchBtn').addEventListener('click', (e) => {
+      isIsotropic = !isIsotropic;
+      e.target.textContent = isIsotropic ? 'Mapping: Isotropic (Locked)' : 'Mapping: Naive Stretch';
+      render();
+    });
+
+    document.getElementById('clearBtn').addEventListener('click', () => {
+      strokes.length = 0;
+      currentStroke = [];
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>

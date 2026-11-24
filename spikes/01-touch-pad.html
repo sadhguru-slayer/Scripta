@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Scripta — Spike 01: Mobile Touch &amp; Stylus Pad</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #0b0f17;
+      color: #e2e8f0;
+      font-family: system-ui, -apple-system, sans-serif;
+      /* Prevent browser pull-to-refresh, pinch-zoom, and back-swipe gestures */
+      touch-action: none;
+      overscroll-behavior: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+      background-image: radial-gradient(#1e293b 1px, transparent 1px);
+      background-size: 24px 24px;
+    }
+    .hud {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      right: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      pointer-events: none;
+      font-size: 12px;
+      gap: 8px;
+    }
+    .pill {
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid #334155;
+      padding: 6px 10px;
+      border-radius: 999px;
+      pointer-events: auto;
+    }
+    button {
+      background: #1e293b;
+      color: #f8fafc;
+      border: 1px solid #475569;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="pad"></canvas>
+  <div class="hud">
+    <div class="pill" id="stats">Touch or draw with stylus…</div>
+    <div style="display:flex; gap:8px; pointer-events:auto;">
+      <button id="fsBtn">Fullscreen</button>
+      <button id="clearBtn">Clear</button>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('pad');
+    const ctx = canvas.getContext('2d');
+    const statsEl = document.getElementById('stats');
+
+    let activePointerId = null;
+    let points = [];
+    let moveEvents = 0;
+    let coalescedCount = 0;
+
+    function resize() {
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = window.innerWidth * dpr;
+      canvas.height = window.innerHeight * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function drawSmoothSegment(pts) {
+      if (pts.length < 2) return;
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      const last = pts[pts.length - 1];
+      const prev = pts[pts.length - 2];
+      // Pressure-modulated width (fallback 0.5 when device has no pressure)
+      const p = last.p > 0 ? last.p : 0.5;
+      ctx.lineWidth = 2 + p * 6;
+
+      ctx.beginPath();
+      if (pts.length === 2) {
+        ctx.moveTo(prev.x, prev.y);
+        ctx.lineTo(last.x, last.y);
+      } else {
+        const prev2 = pts[pts.length - 3];
+        const mid1 = { x: (prev2.x + prev.x) / 2, y: (prev2.y + prev.y) / 2 };
+        const mid2 = { x: (prev.x + last.x) / 2, y: (prev.y + last.y) / 2 };
+        ctx.moveTo(mid1.x, mid1.y);
+        ctx.quadraticCurveTo(prev.x, prev.y, mid2.x, mid2.y);
+      }
+      ctx.stroke();
+    }
+
+    canvas.addEventListener('pointerdown', (e) => {
+      // Single-pointer lock: ignore secondary touches (e.g. palm) while drawing
+      if (activePointerId !== null) return;
+      activePointerId = e.pointerId;
+      canvas.setPointerCapture(e.pointerId);
+      points = [{ x: e.clientX, y: e.clientY, p: e.pressure }];
+      moveEvents = 0;
+      coalescedCount = 0;
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== activePointerId) return;
+      const batch = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+      moveEvents++;
+      coalescedCount += batch.length;
+
+      for (const pt of batch) {
+        const prev = points[points.length - 1];
+        const dx = pt.clientX - prev.x;
+        const dy = pt.clientY - prev.y;
+        // Distance filter: skip sub-1.5px micro-jitter
+        if (dx * dx + dy * dy < 2.25) continue;
+        points.push({ x: pt.clientX, y: pt.clientY, p: pt.pressure });
+        drawSmoothSegment(points);
+      }
+
+      statsEl.textContent =
+        `type=${e.pointerType} | p=${e.pressure.toFixed(2)} | coalesced=${coalescedCount}/${moveEvents}`;
+    });
+
+    function endStroke(e) {
+      if (e.pointerId !== activePointerId) return;
+      activePointerId = null;
+      points = [];
+    }
+    canvas.addEventListener('pointerup', endStroke);
+    canvas.addEventListener('pointercancel', endStroke);
+
+    document.getElementById('clearBtn').addEventListener('click', () => {
+      ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    });
+
+    document.getElementById('fsBtn').addEventListener('click', async () => {
+      try {
+        if (!document.fullscreenElement) {
+          await document.documentElement.requestFullscreen();
+        } else {
+          await document.exitFullscreen();
+        }
+      } catch (err) {
+        statsEl.textContent = `Fullscreen unsupported: ${err.message}`;
+      }
+    });
+  </script>
+</body>
+</html>

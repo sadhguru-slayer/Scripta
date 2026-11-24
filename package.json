@@ -1,0 +1,11 @@
+{
+  "name": "scripta",
+  "private": true,
+  "scripts": {
+    "dev:desktop": "pnpm --filter @scripta/desktop dev",
+    "dev:mobile": "pnpm --filter @scripta/mobile dev",
+    "dev:backend": "cd backend && go run ./cmd/server",
+    "build": "pnpm -r build",
+    "test:shared": "pnpm --filter @scripta/shared test"
+  }
+}
