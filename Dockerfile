@@ -1,7 +1,7 @@
 # Stage 1: Build desktop & mobile frontends
 FROM node:22-alpine AS frontend
 WORKDIR /app
-RUN corepack enable
+RUN npm install -g pnpm@10.26.0
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY packages/shared/package.json packages/shared/
