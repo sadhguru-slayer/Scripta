@@ -1,6 +1,18 @@
+<p align="center">
+  <img src="logo_with_text.png" alt="Scripta" width="320" />
+</p>
+
 # Scripta
 
 A lightweight browser-based digital whiteboard where your smartphone acts as a wireless drawing tablet in real time.
+
+## Features
+
+- **Wireless phone tablet** — scan a QR code and draw on your laptop from your phone.
+- **Smooth handwriting** — adjustable phone input smoothing and cursor glide in Settings.
+- **Infinite canvas** — pan, zoom, and auto-save locally.
+- **Shapes & connectors** — rectangles, ellipses, diamonds, lines, and magnetic arrows.
+- **Guided onboarding** — welcome page, replayable tutorial, and a Help & Shortcuts panel.
 
 ## Milestone 0: Technical Spikes
 

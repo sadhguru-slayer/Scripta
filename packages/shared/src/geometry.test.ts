@@ -9,6 +9,7 @@ import {
   hitTestStroke,
   normDeltaToWorld,
   screenToWorld,
+  smoothPoint,
   stepCursorPosition,
   windowNormToWorld,
   worldToScreen,
@@ -321,5 +322,42 @@ describe('hitTestStroke / computeFitCamera', () => {
     const screenCenter = worldToScreen(300, 200, cam!);
     expect(screenCenter.x).toBeCloseTo(600, 4);
     expect(screenCenter.y).toBeCloseTo(400, 4);
+  });
+
+  it('smoothPoint returns raw point at 0 and damps jitter at higher smoothness', () => {
+    const prev = { x: 0, y: 0 };
+    const next = { x: 100, y: 100 };
+    expect(smoothPoint(prev, next, 0)).toEqual(next);
+    const mid = smoothPoint(prev, next, 50);
+    expect(mid.x).toBeCloseTo(64, 4);
+    const high = smoothPoint(prev, next, 100);
+    expect(high.x).toBeCloseTo(28, 4);
+  });
+
+  it('smoothPoint damps alternating jitter while tracking the trend', () => {
+    let prev = { x: 0, y: 0 };
+    const raw = [
+      { x: 10, y: 0 },
+      { x: 10, y: 8 },
+      { x: 20, y: 0 },
+      { x: 20, y: 8 },
+      { x: 30, y: 0 },
+    ];
+    const smoothed: { x: number; y: number }[] = [];
+    for (const p of raw) {
+      prev = smoothPoint(prev, p, 70);
+      smoothed.push(prev);
+    }
+    const rawJitter = raw.reduce((sum, p) => sum + Math.abs(p.y), 0);
+    const smoothJitter = smoothed.reduce((sum, p) => sum + Math.abs(p.y), 0);
+    expect(smoothJitter).toBeLessThan(rawJitter);
+    expect(smoothed[smoothed.length - 1].x).toBeGreaterThan(0);
+  });
+
+  it('smoothPoint treats non-finite smoothness as raw input', () => {
+    const prev = { x: 0, y: 0 };
+    const next = { x: 42, y: 24 };
+    expect(smoothPoint(prev, next, Number.NaN)).toEqual(next);
+    expect(smoothPoint(prev, next, Number.POSITIVE_INFINITY)).toEqual(next);
   });
 });

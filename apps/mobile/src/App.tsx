@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  DEFAULT_PHONE_SMOOTHNESS,
   renderSmoothStroke,
+  smoothPoint,
   type ScriptaWsMessage,
   type StrokePoint,
   type ToolType,
@@ -72,8 +74,13 @@ export default function App() {
   }));
   /** Reflects the cursor mode reported by the desktop via desktop.cursor. */
   const [cursorMode, setCursorMode] = useState<'draw' | 'move'>('draw');
-  const [toolState,  setToolState]  = useState<{ tool: ToolType; color: string; width: number }>({
-    tool: 'pen', color: '#38bdf8', width: 4,
+  const [toolState,  setToolState]  = useState<{
+    tool: ToolType;
+    color: string;
+    width: number;
+    smoothness?: number;
+  }>({
+    tool: 'pen', color: '#38bdf8', width: 4, smoothness: DEFAULT_PHONE_SMOOTHNESS,
   });
 
   // Draggable FAB
@@ -90,6 +97,7 @@ export default function App() {
   const previewCanvasRef   = useRef<HTMLCanvasElement | null>(null);
   const activePointerIdRef = useRef<number | null>(null);
   const lastPixelRef       = useRef<{ x: number; y: number } | null>(null);
+  const previewSmoothRef   = useRef<{ x: number; y: number } | null>(null);
   const strokeStartTsRef   = useRef<number>(0);
   const pendingPointsRef   = useRef<StrokePoint[]>([]);
   const activeStrokeIdRef  = useRef<string | null>(null);
@@ -165,6 +173,7 @@ export default function App() {
   const clearPreviews = useCallback(() => {
     activePreviewRef.current  = null;
     fadingPreviewsRef.current = [];
+    previewSmoothRef.current  = null;
     if (previewRafIdRef.current !== null) {
       cancelAnimationFrame(previewRafIdRef.current);
       previewRafIdRef.current = null;
@@ -224,6 +233,7 @@ export default function App() {
         setCursorMode(msg.payload.mode);
         if (msg.payload.mode === 'move' && activePreviewRef.current) {
           activePreviewRef.current = null;
+          previewSmoothRef.current = null;
           schedulePreviewRender();
         }
       }
@@ -286,8 +296,10 @@ export default function App() {
 
   const finishPadPointer = useCallback((cancelled: boolean) => {
     if (activePointerIdRef.current === null) return;
+    const lastPixel = lastPixelRef.current;
     activePointerIdRef.current = null;
     lastPixelRef.current       = null;
+    previewSmoothRef.current   = null;
 
     if (rafIdRef.current !== null) {
       cancelAnimationFrame(rafIdRef.current);
@@ -296,6 +308,14 @@ export default function App() {
 
     if (activePreviewRef.current) {
       if (!cancelled) {
+        if (lastPixel) {
+          activePreviewRef.current.points.push({
+            x: lastPixel.x,
+            y: lastPixel.y,
+            p: 0.5,
+            dt: Date.now() - strokeStartTsRef.current,
+          });
+        }
         activePreviewRef.current.endedAt = performance.now();
         fadingPreviewsRef.current.push(activePreviewRef.current);
       }
@@ -351,6 +371,7 @@ export default function App() {
     const rotated = isSoftwareRotated(horizontalModeRef.current, w, h);
     const norm    = clientToTabletNorm(e.clientX, e.clientY, w, h, rotated);
     lastPixelRef.current = { x: e.clientX, y: e.clientY };
+    previewSmoothRef.current = { x: e.clientX, y: e.clientY };
 
     // All gestures start with stroke.start — desktop classifies draw vs. move.
     const now = Date.now();
@@ -390,6 +411,7 @@ export default function App() {
       : [e.nativeEvent];
 
     const previewStroke = cursorModeRef.current !== 'move' ? activePreviewRef.current : null;
+    const smoothness = toolStateRef.current.smoothness ?? DEFAULT_PHONE_SMOOTHNESS;
     let addedPreview = false;
 
     for (const pt of batch) {
@@ -405,7 +427,11 @@ export default function App() {
       const dt   = Date.now() - strokeStartTsRef.current;
       pendingPointsRef.current.push({ x: norm.x, y: norm.y, p, dt });
       if (previewStroke) {
-        previewStroke.points.push({ x: pt.clientX, y: pt.clientY, p, dt });
+        const rawPx = { x: pt.clientX, y: pt.clientY };
+        const prevSmooth = previewSmoothRef.current ?? rawPx;
+        const smoothed = smoothPoint(prevSmooth, rawPx, smoothness);
+        previewSmoothRef.current = smoothed;
+        previewStroke.points.push({ x: smoothed.x, y: smoothed.y, p, dt });
         addedPreview = true;
       }
     }
@@ -483,7 +509,12 @@ export default function App() {
         height: '100%', display: 'flex', flexDirection: 'column',
         alignItems: 'center', justifyContent: 'center', padding: 24, gap: 16,
       }}>
-        <h2 style={{ margin: 0 }}>Scripta Tablet</h2>
+        <img
+          src={`${import.meta.env.BASE_URL}logo_with_text.png`}
+          alt="Scripta"
+          style={{ width: 'min(280px, 80vw)', height: 'auto', display: 'block' }}
+        />
+        <h2 style={{ margin: 0, fontSize: 16, color: '#94a3b8', fontWeight: 500 }}>Phone Tablet</h2>
         <p style={{ margin: 0, color: '#94a3b8', fontSize: 14, textAlign: 'center' }}>
           Enter the 6-character code shown on your desktop, or scan the QR code.
         </p>

@@ -117,3 +117,9 @@ export interface CursorSlideResult {
   y: number;
   settled: boolean;
 }
+
+/** Default phone input smoothing (0 = raw, 100 = maximum). */
+export const DEFAULT_PHONE_SMOOTHNESS = 40;
+
+/** Default cursor glide time constant in milliseconds. */
+export const DEFAULT_CURSOR_GLIDE_MS = 38;

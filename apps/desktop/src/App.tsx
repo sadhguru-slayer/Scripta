@@ -24,6 +24,7 @@ import {
   resolveConnectorEndpoints,
   screenToWorld,
   snapLineEnd,
+  smoothPoint,
   stepCursorPosition,
   syncBoundConnectors,
   translateElement,
@@ -52,14 +53,27 @@ import {
   DownloadSvg,
   EllipseSvg,
   EraserSvg,
+  HelpSvg,
   HighlighterSvg,
   LineSvg,
   PenSvg,
   RectSvg,
   RedoSvg,
   SelectSvg,
+  SettingsSvg,
   UndoSvg,
 } from './icons';
+import { TutorialModal } from './TutorialModal';
+import { LandingPage } from './LandingPage';
+import { SettingsModal } from './SettingsModal';
+import { HelpModal } from './HelpModal';
+import { assetUrl } from './assets';
+import {
+  DEFAULT_SETTINGS,
+  loadSettings,
+  saveSettings,
+  type AppSettings,
+} from './settings';
 
 const COLORS = ['#f8fafc', '#38bdf8', '#34d399', '#fbbf24', '#fb7185'];
 const WIDTHS = [2, 4, 7];
@@ -72,8 +86,40 @@ const SHAPE_FILLS: { label: string; value: string | undefined; swatch: string }[
   { label: 'Rose',  value: 'rgba(251, 113, 133, 0.18)', swatch: '#e11d48' },
 ];
 const STORAGE_KEY = 'scripta:board:v1';
+const LANDING_KEY = 'scripta:landing:v1';
+const TUTORIAL_KEY = 'scripta:tutorial:v1';
 
 const drawKey = (id: string) => id + '__draw';
+
+function shouldShowLanding(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('tour') === '1') return false;
+    if (params.get('welcome') === '1') return true;
+    return window.localStorage.getItem(LANDING_KEY) !== 'seen';
+  } catch {
+    return true;
+  }
+}
+
+function hasSeenTutorial(): boolean {
+  if (typeof window === 'undefined') return true;
+  try {
+    return window.localStorage.getItem(TUTORIAL_KEY) === 'seen';
+  } catch {
+    return false;
+  }
+}
+
+function shouldShowTutorialFromUrl(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return new URLSearchParams(window.location.search).get('tour') === '1';
+  } catch {
+    return false;
+  }
+}
 
 interface PairingState {
   sessionId: string;
@@ -229,6 +275,11 @@ export default function App() {
   const [showQrModal,    setShowQrModal]    = useState(false);
   const [pairing,        setPairing]        = useState<PairingState | null>(null);
   const [pairError,      setPairError]      = useState<string | null>(null);
+  const [settings,       setSettings]       = useState<AppSettings>(() => loadSettings());
+  const [showLanding,    setShowLanding]    = useState<boolean>(() => shouldShowLanding());
+  const [showTutorial,   setShowTutorial]   = useState<boolean>(() => shouldShowTutorialFromUrl());
+  const [showSettings,   setShowSettings]   = useState(false);
+  const [showHelp,       setShowHelp]       = useState(false);
 
   // Ref mirrors for event handlers
   const toolRef            = useRef(tool);
@@ -240,6 +291,11 @@ export default function App() {
   const bgTypeRef          = useRef<BackgroundType>(bgType);
   const editingElIdRef     = useRef(editingElId);
   const phoneConnectedRef  = useRef(false);
+  const settingsRef            = useRef<AppSettings>(settings);
+  const remoteSmoothNormRef    = useRef<Map<string, Point2D>>(new Map());
+  const remoteLastRawPointRef  = useRef<Map<string, StrokePoint>>(new Map());
+  const suppressTutorialRef    = useRef(false);
+  const modalOpenRef           = useRef(false);
   toolRef.current           = tool;
   colorRef.current          = color;
   widthRef.current          = width;
@@ -248,6 +304,8 @@ export default function App() {
   connRoutingRef.current    = connRouting;
   bgTypeRef.current         = bgType;
   editingElIdRef.current    = editingElId;
+  settingsRef.current       = settings;
+  modalOpenRef.current      = showLanding || showTutorial || showSettings || showHelp || showQrModal;
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -260,6 +318,17 @@ export default function App() {
   const syncHistoryFlags = useCallback(() => {
     setCanUndo(historyRef.current.canUndo);
     setCanRedo(historyRef.current.canRedo);
+  }, []);
+
+  const updateSettings = useCallback((next: AppSettings) => {
+    setSettings(next);
+    saveSettings(next);
+  }, []);
+
+  const resetSettings = useCallback(() => {
+    const next = { ...DEFAULT_SETTINGS };
+    setSettings(next);
+    saveSettings(next);
   }, []);
 
   const scheduleSave = useCallback(() => {
@@ -636,7 +705,10 @@ export default function App() {
         cursorDisplayWorldRef.current,
         cursorTargetWorldRef.current,
         dtMs,
-        { tauMs: 38, epsilon: 0.35 / Math.max(0.2, cameraRef.current.zoom) },
+        {
+          tauMs: settingsRef.current.cursorGlideMs,
+          epsilon: 0.35 / Math.max(0.2, cameraRef.current.zoom),
+        },
       );
       cursorDisplayWorldRef.current.x = step.x;
       cursorDisplayWorldRef.current.y = step.y;
@@ -818,6 +890,8 @@ export default function App() {
     erasingLocalRef.current = null;
     erasingRemoteRef.current.clear();
     remotePrevNormRef.current.clear();
+    remoteSmoothNormRef.current.clear();
+    remoteLastRawPointRef.current.clear();
     selectedIdRef.current = null;
     setSelectedId(null);
     setEditingElId(null);
@@ -1095,6 +1169,8 @@ export default function App() {
       const drawNorm = remotePrevNormRef.current.get(drawKey(strokeId));
       activeRemoteRef.current.delete(strokeId);
       remotePrevNormRef.current.delete(drawKey(strokeId));
+      remoteSmoothNormRef.current.delete(strokeId);
+      remoteLastRawPointRef.current.delete(strokeId);
       if (convertToMove && drawNorm) {
         remotePrevNormRef.current.set(strokeId, drawNorm);
       }
@@ -1103,6 +1179,8 @@ export default function App() {
       const drawNorm = remotePrevNormRef.current.get(drawKey(strokeId));
       activeRemoteDraftRef.current.delete(strokeId);
       remotePrevNormRef.current.delete(drawKey(strokeId));
+      remoteSmoothNormRef.current.delete(strokeId);
+      remoteLastRawPointRef.current.delete(strokeId);
       if (convertToMove && drawNorm) {
         remotePrevNormRef.current.set(strokeId, drawNorm);
       }
@@ -1110,6 +1188,8 @@ export default function App() {
     for (const [strokeId, erased] of erasingRemoteRef.current.entries()) {
       const drawNorm = remotePrevNormRef.current.get(drawKey(strokeId));
       remotePrevNormRef.current.delete(drawKey(strokeId));
+      remoteSmoothNormRef.current.delete(strokeId);
+      remoteLastRawPointRef.current.delete(strokeId);
       if (erased.length > 0) {
         historyRef.current.push({ type: 'erase', removed: erased });
         syncHistoryFlags();
@@ -1138,6 +1218,8 @@ export default function App() {
     modHeldRef.current = false;
     setModHeld(false);
     remotePrevNormRef.current.clear();
+    remoteSmoothNormRef.current.clear();
+    remoteLastRawPointRef.current.clear();
     sendToMobile('desktop.cursor', { mode: 'draw' });
     scheduleRender({ active: true });
   }, [sendToMobile, scheduleRender]);
@@ -1146,6 +1228,18 @@ export default function App() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (editingElIdRef.current) return;
+      if (modalOpenRef.current) return;
+
+      if (e.key === '?' || e.key === 'F1') {
+        e.preventDefault();
+        setShowHelp(true);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === ',') {
+        e.preventDefault();
+        setShowSettings(true);
+        return;
+      }
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault();
@@ -1230,8 +1324,26 @@ export default function App() {
   // ── Sync tool/color to phone ──────────────────────────────────────────────
   useEffect(() => {
     if (!phoneConnected) return;
-    sendToMobile('desktop.state', { tool, color, width });
-  }, [tool, color, width, phoneConnected, sendToMobile]);
+    sendToMobile('desktop.state', {
+      tool,
+      color,
+      width,
+      smoothness: settings.phoneSmoothness,
+    });
+  }, [tool, color, width, phoneConnected, sendToMobile, settings.phoneSmoothness]);
+
+  // ── First-run tutorial ───────────────────────────────────────────────────
+  useEffect(() => {
+    if (showLanding) return;
+    if (suppressTutorialRef.current) {
+      suppressTutorialRef.current = false;
+      return;
+    }
+    if (!settings.showTutorialOnStart) return;
+    if (hasSeenTutorial()) return;
+    const timer = window.setTimeout(() => setShowTutorial(true), 700);
+    return () => window.clearTimeout(timer);
+  }, [showLanding, settings.showTutorialOnStart]);
 
   // Helper to commit a finished shape or connector draft
   const commitDraftElement = useCallback((draft: ActiveDraft) => {
@@ -1305,6 +1417,8 @@ export default function App() {
           activeRemoteRef.current.clear();
           activeRemoteDraftRef.current.clear();
           remotePrevNormRef.current.clear();
+          remoteSmoothNormRef.current.clear();
+          remoteLastRawPointRef.current.clear();
           snapPreviewRef.current = null;
           scheduleRender({ active: true });
         }
@@ -1343,6 +1457,8 @@ export default function App() {
         const wp  = windowNormToWorld(point.x, point.y, win);
         cursorTargetWorldRef.current = wp;
         remotePrevNormRef.current.set(drawKey(strokeId), { x: point.x, y: point.y });
+        remoteSmoothNormRef.current.set(strokeId, { x: point.x, y: point.y });
+        remoteLastRawPointRef.current.set(strokeId, point);
 
         if (activeTool === 'eraser') {
           const buf: ErasedEntry[] = [];
@@ -1429,7 +1545,15 @@ export default function App() {
           const win = getWritingWindow();
           let lastWp: Point2D | null = null;
           for (const raw of points) {
-            const wp = windowNormToWorld(raw.x, raw.y, win);
+            const prevSmooth = remoteSmoothNormRef.current.get(strokeId) ?? { x: raw.x, y: raw.y };
+            const smoothed = smoothPoint(
+              prevSmooth,
+              { x: raw.x, y: raw.y },
+              settingsRef.current.phoneSmoothness,
+            );
+            remoteSmoothNormRef.current.set(strokeId, smoothed);
+            remoteLastRawPointRef.current.set(strokeId, raw);
+            const wp = windowNormToWorld(smoothed.x, smoothed.y, win);
             eraseAtPoint(wp, eraseBuf);
             lastWp = wp;
           }
@@ -1447,7 +1571,15 @@ export default function App() {
         if (draft) {
           const win = getWritingWindow();
           const newest = points[points.length - 1];
-          const wp = windowNormToWorld(newest.x, newest.y, win);
+          const prevSmooth = remoteSmoothNormRef.current.get(strokeId) ?? { x: newest.x, y: newest.y };
+          const smoothed = smoothPoint(
+            prevSmooth,
+            { x: newest.x, y: newest.y },
+            settingsRef.current.phoneSmoothness,
+          );
+          remoteSmoothNormRef.current.set(strokeId, smoothed);
+          remoteLastRawPointRef.current.set(strokeId, newest);
+          const wp = windowNormToWorld(smoothed.x, smoothed.y, win);
           remotePrevNormRef.current.set(drawKey(strokeId), { x: newest.x, y: newest.y });
           cursorTargetWorldRef.current = wp;
           if (draft.kind === 'shape') {
@@ -1467,7 +1599,15 @@ export default function App() {
         const win = getWritingWindow();
         let lastWp: Point2D | null = null;
         for (const raw of points) {
-          const wp = windowNormToWorld(raw.x, raw.y, win);
+          const prevSmooth = remoteSmoothNormRef.current.get(strokeId) ?? { x: raw.x, y: raw.y };
+          const smoothed = smoothPoint(
+            prevSmooth,
+            { x: raw.x, y: raw.y },
+            settingsRef.current.phoneSmoothness,
+          );
+          remoteSmoothNormRef.current.set(strokeId, smoothed);
+          remoteLastRawPointRef.current.set(strokeId, raw);
+          const wp = windowNormToWorld(smoothed.x, smoothed.y, win);
           const pt: StrokePoint = { x: wp.x, y: wp.y, p: raw.p, dt: raw.dt };
           s.points.push(pt);
           s.bounds = appendPointToBounds(s.bounds, pt);
@@ -1489,10 +1629,18 @@ export default function App() {
         const { strokeId } = msg.payload;
         remotePrevNormRef.current.delete(strokeId);
         remotePrevNormRef.current.delete(drawKey(strokeId));
+        const lastRaw = remoteLastRawPointRef.current.get(strokeId);
+        remoteSmoothNormRef.current.delete(strokeId);
+        remoteLastRawPointRef.current.delete(strokeId);
 
         const eraseBuf = erasingRemoteRef.current.get(strokeId);
         if (eraseBuf) {
           erasingRemoteRef.current.delete(strokeId);
+          if (lastRaw) {
+            const win = getWritingWindow();
+            const wp = windowNormToWorld(lastRaw.x, lastRaw.y, win);
+            eraseAtPoint(wp, eraseBuf);
+          }
           if (eraseBuf.length > 0) {
             historyRef.current.push({ type: 'erase', removed: eraseBuf });
             syncHistoryFlags();
@@ -1505,6 +1653,18 @@ export default function App() {
         if (draft) {
           activeRemoteDraftRef.current.delete(strokeId);
           snapPreviewRef.current = null;
+          if (lastRaw) {
+            const win = getWritingWindow();
+            const wp = windowNormToWorld(lastRaw.x, lastRaw.y, win);
+            if (draft.kind === 'shape') {
+              draft.current = wp;
+            } else {
+              const snap = findSnapAnchor(wp, elementsRef.current, 18 / cameraRef.current.zoom);
+              snapPreviewRef.current = snap ? { shape: snap.shape, activeAnchor: snap.binding } : null;
+              draft.end = snap ? snap.pt : snapLineEnd(draft.start, wp, shiftHeldRef.current);
+              draft.endBinding = snap ? snap.binding : null;
+            }
+          }
           commitDraftElement(draft);
           scheduleRender({ active: true });
           break;
@@ -1512,6 +1672,17 @@ export default function App() {
 
         const s = activeRemoteRef.current.get(strokeId);
         if (!s) break;
+
+        if (lastRaw) {
+          const win = getWritingWindow();
+          const wp = windowNormToWorld(lastRaw.x, lastRaw.y, win);
+          const last = s.points[s.points.length - 1];
+          if (!last || Math.hypot(wp.x - last.x, wp.y - last.y) > 0.01) {
+            const pt: StrokePoint = { x: wp.x, y: wp.y, p: lastRaw.p, dt: lastRaw.dt };
+            s.points.push(pt);
+            s.bounds = appendPointToBounds(s.bounds, pt);
+          }
+        }
 
         if (s.points.length >= 1) {
           elementsRef.current.push(s);
@@ -1530,6 +1701,8 @@ export default function App() {
         const { strokeId } = msg.payload;
         remotePrevNormRef.current.delete(strokeId);
         remotePrevNormRef.current.delete(drawKey(strokeId));
+        remoteSmoothNormRef.current.delete(strokeId);
+        remoteLastRawPointRef.current.delete(strokeId);
         erasingRemoteRef.current.delete(strokeId);
         activeRemoteDraftRef.current.delete(strokeId);
         activeRemoteRef.current.delete(strokeId);
@@ -1565,7 +1738,7 @@ export default function App() {
   ]);
 
   // ── Pairing ──────────────────────────────────────────────────────────────
-  const startPairing = async () => {
+  const startPairing = useCallback(async () => {
     setPairError(null);
     setShowQrModal(true);
 
@@ -1607,7 +1780,99 @@ export default function App() {
     } catch (err) {
       setPairError(err instanceof Error ? err.message : 'Pairing failed');
     }
-  };
+  }, [handleWsMessage, scheduleRender]);
+
+  // ── Landing / tutorial / help dialogs ────────────────────────────────────
+  const dismissLanding = useCallback((action: 'start' | 'tour' | 'connect' | 'skip') => {
+    try {
+      window.localStorage.setItem(LANDING_KEY, 'seen');
+    } catch {
+      // Ignore storage errors
+    }
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('welcome')) {
+        url.searchParams.delete('welcome');
+        window.history.replaceState({}, '', url.toString());
+      }
+    } catch {
+      // Ignore URL/history errors
+    }
+
+    if (action === 'tour') {
+      suppressTutorialRef.current = true;
+      setShowTutorial(true);
+    } else if (action === 'connect') {
+      suppressTutorialRef.current = true;
+      void startPairing();
+    }
+    setShowLanding(false);
+  }, [startPairing]);
+
+  const handleTutorialClose = useCallback(() => {
+    setShowTutorial(false);
+    try {
+      window.localStorage.setItem(TUTORIAL_KEY, 'seen');
+    } catch {
+      // Ignore storage errors
+    }
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('tour')) {
+        url.searchParams.delete('tour');
+        window.history.replaceState({}, '', url.toString());
+      }
+    } catch {
+      // Ignore URL/history errors
+    }
+  }, []);
+
+  const openTutorial = useCallback(() => {
+    setShowHelp(false);
+    setShowSettings(false);
+    setShowLanding(false);
+    setShowTutorial(true);
+  }, []);
+
+  const openSettings = useCallback(() => {
+    setShowHelp(false);
+    setShowTutorial(false);
+    setShowLanding(false);
+    setShowSettings(true);
+  }, []);
+
+  const openHelp = useCallback(() => {
+    setShowHelp(true);
+  }, []);
+
+  const openWelcome = useCallback(() => {
+    setShowHelp(false);
+    setShowSettings(false);
+    setShowTutorial(false);
+    setShowLanding(true);
+  }, []);
+
+  const openConnect = useCallback(() => {
+    setShowHelp(false);
+    setShowSettings(false);
+    setShowTutorial(false);
+    setShowLanding(false);
+    void startPairing();
+  }, [startPairing]);
+
+  // ── Escape closes the top-most dialog ────────────────────────────────────
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (showTutorial) return; // TutorialModal handles its own Escape
+      if (showSettings) { setShowSettings(false); return; }
+      if (showHelp) { setShowHelp(false); return; }
+      if (showQrModal) { setShowQrModal(false); return; }
+      if (showLanding) { dismissLanding('skip'); return; }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showTutorial, showSettings, showHelp, showQrModal, showLanding, dismissLanding]);
 
   // ── Wheel (pan + zoom) ───────────────────────────────────────────────────
   const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
@@ -2175,13 +2440,35 @@ export default function App() {
         borderRadius: 12, backdropFilter: 'blur(10px)',
         boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
         userSelect: 'none',
+        maxWidth: 'calc(100vw - 24px)',
+        overflowX: 'auto',
+        scrollbarWidth: 'none',
       }}>
-        <span style={{
-          fontSize: 13, fontWeight: 700, letterSpacing: 0.4,
-          padding: '0 6px 0 4px', color: '#f8fafc',
-        }}>
-          Scripta
-        </span>
+        <button
+          onClick={openWelcome}
+          title="Home / Welcome"
+          aria-label="Open welcome page"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 7,
+            padding: '0 6px 0 2px',
+            background: 'transparent',
+            border: 'none',
+            color: '#f8fafc',
+            cursor: 'pointer',
+            flexShrink: 0,
+          }}
+        >
+          <img
+            src={assetUrl('logo.png')}
+            alt=""
+            width={22}
+            height={22}
+            style={{ borderRadius: 6, objectFit: 'contain', display: 'block' }}
+          />
+          <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: 0.4 }}>Scripta</span>
+        </button>
 
         <Divider />
 
@@ -2404,9 +2691,10 @@ export default function App() {
         </div>
       )}
 
-      {/* ── Zoom / Fit / Reset ── */}
+      {/* ── Zoom / Fit / Reset / Settings / Help ── */}
       <div style={{
         position: 'fixed', bottom: 14, right: 14, display: 'flex', gap: 6,
+        alignItems: 'center',
       }}>
         <button onClick={zoomToFit} title="Zoom to fit all elements" style={{
           background: 'rgba(15,23,42,0.85)', color: '#94a3b8',
@@ -2422,6 +2710,22 @@ export default function App() {
         }}>
           {zoomPct}% · Reset View
         </button>
+        <button
+          onClick={openSettings}
+          title="Settings (Ctrl+,)"
+          aria-label="Settings"
+          style={floatingIconBtnStyle()}
+        >
+          <SettingsSvg />
+        </button>
+        <button
+          onClick={openHelp}
+          title="Help & Shortcuts (?)"
+          aria-label="Help"
+          style={floatingIconBtnStyle()}
+        >
+          <HelpSvg />
+        </button>
       </div>
 
       {/* ── QR Modal ── */}
@@ -2429,12 +2733,20 @@ export default function App() {
         <div onClick={() => setShowQrModal(false)} style={{
           position: 'fixed', inset: 0, background: 'rgba(2,6,23,0.75)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
+          zIndex: 60,
         }}>
           <div onClick={(e) => e.stopPropagation()} style={{
             background: '#0f172a', border: '1px solid #334155', borderRadius: 16,
             padding: 24, width: 340, textAlign: 'center',
             display: 'flex', flexDirection: 'column', gap: 14, alignItems: 'center',
           }}>
+            <img
+              src={assetUrl('logo.png')}
+              alt="Scripta"
+              width={44}
+              height={44}
+              style={{ borderRadius: 10, objectFit: 'contain' }}
+            />
             <h3 style={{ margin: 0, fontSize: 18 }}>Connect Your Phone</h3>
             <p style={{ margin: 0, fontSize: 13, color: '#94a3b8' }}>
               Scan the QR code on the same Wi-Fi. No app install needed.
@@ -2450,6 +2762,37 @@ export default function App() {
             <button onClick={() => setShowQrModal(false)} style={pillBtnStyle(false)}>Close</button>
           </div>
         </div>
+      )}
+
+      {/* ── Landing / Tutorial / Settings / Help ── */}
+      {showLanding && (
+        <LandingPage
+          onStart={() => dismissLanding('start')}
+          onTour={() => dismissLanding('tour')}
+          onConnect={() => dismissLanding('connect')}
+          onSkip={() => dismissLanding('skip')}
+        />
+      )}
+
+      {showTutorial && <TutorialModal onClose={handleTutorialClose} />}
+
+      {showSettings && (
+        <SettingsModal
+          settings={settings}
+          onChange={updateSettings}
+          onReset={resetSettings}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
+
+      {showHelp && (
+        <HelpModal
+          onClose={() => setShowHelp(false)}
+          onStartTour={openTutorial}
+          onConnect={openConnect}
+          onOpenWelcome={openWelcome}
+          onOpenSettings={openSettings}
+        />
       )}
     </div>
   );
@@ -2485,6 +2828,22 @@ function pillBtnStyle(active: boolean): React.CSSProperties {
     borderRadius: 6,
     padding: '3px 8px',
     fontSize: 11,
+    cursor: 'pointer',
+  };
+}
+
+function floatingIconBtnStyle(): React.CSSProperties {
+  return {
+    width: 32,
+    height: 32,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'rgba(15,23,42,0.85)',
+    color: '#94a3b8',
+    border: '1px solid #334155',
+    borderRadius: 8,
+    padding: 0,
     cursor: 'pointer',
   };
 }

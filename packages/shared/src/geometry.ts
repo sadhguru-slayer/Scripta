@@ -30,6 +30,26 @@ export function worldToScreen(wx: number, wy: number, camera: Camera): { x: numb
 }
 
 /**
+ * Applies a real-time exponential moving average filter to reduce touch jitter.
+ * `smoothness` in [0, 100]: 0 = raw unfiltered input, 100 = maximum smoothing.
+ */
+export function smoothPoint(
+  prev: Point2D,
+  next: Point2D,
+  smoothness: number,
+): Point2D {
+  const s = Number.isFinite(smoothness)
+    ? Math.max(0, Math.min(100, smoothness))
+    : 0;
+  if (s === 0) return next;
+  const alpha = 1 - (s / 100) * 0.72;
+  return {
+    x: prev.x + (next.x - prev.x) * alpha,
+    y: prev.y + (next.y - prev.y) * alpha,
+  };
+}
+
+/**
  * Converts a normalised phone pointer delta into world-unit displacement.
  *
  * Design rationale (relative/delta mapping for Move Window / Move Cursor mode):
