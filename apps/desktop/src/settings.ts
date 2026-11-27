@@ -1,5 +1,6 @@
 import {
   DEFAULT_CURSOR_GLIDE_MS,
+  DEFAULT_HANDWRITING_ASSIST,
   DEFAULT_PHONE_SMOOTHNESS,
   DEFAULT_WRITING_WINDOW_RATIO,
 } from '@scripta/shared';
@@ -7,6 +8,8 @@ import {
 export interface AppSettings {
   /** Phone input smoothing in [0, 100]. 0 = raw, 100 = maximum. */
   phoneSmoothness: number;
+  /** Post-stroke handwriting assistance in [0, 100]. 0 = off, 100 = maximum. */
+  handwritingAssist: number;
   /** Cursor glide time constant in milliseconds. 0 = instant. */
   cursorGlideMs: number;
   /** Writing window fill ratio in [0.2, 0.9]. Smaller = smaller text on desktop. */
@@ -19,6 +22,7 @@ export const SETTINGS_KEY = 'scripta:settings:v1';
 
 export const DEFAULT_SETTINGS: AppSettings = {
   phoneSmoothness: DEFAULT_PHONE_SMOOTHNESS,
+  handwritingAssist: DEFAULT_HANDWRITING_ASSIST,
   cursorGlideMs: DEFAULT_CURSOR_GLIDE_MS,
   writingWindowRatio: DEFAULT_WRITING_WINDOW_RATIO,
   showTutorialOnStart: true,
@@ -38,6 +42,11 @@ export function loadSettings(): AppSettings {
     return {
       phoneSmoothness: clamp(
         Number(parsed.phoneSmoothness ?? DEFAULT_SETTINGS.phoneSmoothness),
+        0,
+        100,
+      ),
+      handwritingAssist: clamp(
+        Number(parsed.handwritingAssist ?? DEFAULT_SETTINGS.handwritingAssist),
         0,
         100,
       ),

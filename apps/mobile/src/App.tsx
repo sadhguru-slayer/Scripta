@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   beautifyStrokePoints,
   createOneEuroState,
+  DEFAULT_HANDWRITING_ASSIST,
   DEFAULT_PHONE_SMOOTHNESS,
   filterOneEuroPoint,
   renderSmoothStroke,
@@ -117,8 +118,13 @@ export default function App() {
     color: string;
     width: number;
     smoothness?: number;
+    handwritingAssist?: number;
   }>({
-    tool: 'pen', color: '#38bdf8', width: 4, smoothness: DEFAULT_PHONE_SMOOTHNESS,
+    tool: 'pen',
+    color: '#38bdf8',
+    width: 4,
+    smoothness: DEFAULT_PHONE_SMOOTHNESS,
+    handwritingAssist: DEFAULT_HANDWRITING_ASSIST,
   });
 
   // Draggable FAB
@@ -438,7 +444,7 @@ export default function App() {
           });
         }
         activePreviewRef.current.points = beautifyStrokePoints(activePreviewRef.current.points, {
-          smoothness: toolStateRef.current.smoothness ?? DEFAULT_PHONE_SMOOTHNESS,
+          smoothness: toolStateRef.current.handwritingAssist ?? DEFAULT_HANDWRITING_ASSIST,
           baseWidth: activePreviewRef.current.baseWidth,
         });
         activePreviewRef.current.endedAt = performance.now();
@@ -536,6 +542,13 @@ export default function App() {
 
     if (padPointersRef.current.size === 1 && !twoFingerRef.current) {
       startStrokeForPointer(e.pointerId, e.clientX, e.clientY, e.pressure);
+      return;
+    }
+
+    if (twoFingerRef.current?.mode === 'move' && twoFingerRef.current.moverId === null) {
+      // Allow clutching: 1st finger stayed held, 2nd finger touched down again to keep gliding
+      twoFingerRef.current.moverId = e.pointerId;
+      startStrokeForPointer(e.pointerId, e.clientX, e.clientY, e.pressure, true);
       return;
     }
 

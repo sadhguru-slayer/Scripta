@@ -1,5 +1,6 @@
 import {
   DEFAULT_CURSOR_GLIDE_MS,
+  DEFAULT_HANDWRITING_ASSIST,
   DEFAULT_PHONE_SMOOTHNESS,
   DEFAULT_WRITING_WINDOW_RATIO,
 } from '@scripta/shared';
@@ -21,6 +22,14 @@ const SMOOTHNESS_PRESETS = [
   { label: 'Max', value: 100 },
 ];
 
+const ASSIST_PRESETS = [
+  { label: 'Off', value: 0 },
+  { label: 'Light', value: 30 },
+  { label: 'Balanced', value: 55 },
+  { label: 'Strong', value: 80 },
+  { label: 'Max', value: 100 },
+];
+
 const GLIDE_PRESETS = [
   { label: 'Off', value: 0 },
   { label: 'Snappy', value: 20 },
@@ -38,6 +47,7 @@ const RATIO_PRESETS = [
 
 export function SettingsModal({ settings, onChange, onReset, onClose }: SettingsModalProps) {
   const setSmoothness = (value: number) => onChange({ ...settings, phoneSmoothness: value });
+  const setAssist = (value: number) => onChange({ ...settings, handwritingAssist: value });
   const setGlide = (value: number) => onChange({ ...settings, cursorGlideMs: value });
   const setRatio = (value: number) => onChange({ ...settings, writingWindowRatio: value });
 
@@ -89,6 +99,40 @@ export function SettingsModal({ settings, onChange, onReset, onClose }: Settings
               </button>
             ))}
             <span style={defaultHint}>Default {DEFAULT_PHONE_SMOOTHNESS}%</span>
+          </div>
+        </section>
+
+        <section style={section}>
+          <div style={rowBetween}>
+            <div>
+              <div style={labelStyle}>Handwriting assistance</div>
+              <div style={hintStyle}>
+                Neatens completed strokes and smooths curves while keeping sharp letter corners crisp.
+              </div>
+            </div>
+            <span style={valueBadge}>{settings.handwritingAssist}%</span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={5}
+            value={settings.handwritingAssist}
+            onChange={(e) => setAssist(Number(e.target.value))}
+            style={slider}
+            aria-label="Handwriting assistance"
+          />
+          <div style={presetRow}>
+            {ASSIST_PRESETS.map((p) => (
+              <button
+                key={p.label}
+                onClick={() => setAssist(p.value)}
+                style={pill(settings.handwritingAssist === p.value)}
+              >
+                {p.label}
+              </button>
+            ))}
+            <span style={defaultHint}>Default {DEFAULT_HANDWRITING_ASSIST}%</span>
           </div>
         </section>
 

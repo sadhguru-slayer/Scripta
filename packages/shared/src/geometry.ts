@@ -194,12 +194,14 @@ export function beautifyStrokePoints(
   }
 
   const t = s / 100;
-  const eps = options?.tolerance ?? Math.max(0.2, baseWidth * 0.1) * (0.35 + 0.65 * t);
+  const baseEps = Math.max(0.25, baseWidth * 0.14);
+  const sizeEps = Math.min(2.6, arcLen * 0.004);
+  const eps = options?.tolerance ?? Math.max(baseEps, sizeEps) * (0.3 + 0.9 * t);
   let pts = rdpSimplify(points, eps * eps);
   if (pts.length <= 2) return pts;
 
-  const passes = s >= 65 ? 2 : 1;
-  const weight = 0.18 + 0.24 * t;
+  const passes = s >= 70 ? 3 : s >= 35 ? 2 : 1;
+  const weight = 0.22 + 0.28 * t;
 
   for (let pass = 0; pass < passes; pass++) {
     const next: StrokePoint[] = [pts[0]];
