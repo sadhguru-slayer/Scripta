@@ -40,8 +40,8 @@ function getDefaultDeviceName(): string {
   return 'Phone';
 }
 
-const PREVIEW_HOLD_MS    = 750;
-const PREVIEW_FADE_MS    = 1000;
+const PREVIEW_HOLD_MS    = 1800;
+const PREVIEW_FADE_MS    = 1500;
 const PREVIEW_BASE_ALPHA = 0.45;
 const COLORS             = ['#f8fafc', '#38bdf8', '#34d399', '#fbbf24', '#fb7185'];
 const WIDTHS             = [2, 4, 7];
