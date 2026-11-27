@@ -86,6 +86,14 @@ export function BgSvg({ bg }: { bg: BackgroundType }) {
       </svg>
     );
   }
+  if (bg === 'lined') {
+    return (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <rect x="3" y="3" width="18" height="18" rx="2" />
+        <path d="M6 9h12M6 13h12M6 17h12" />
+      </svg>
+    );
+  }
   if (bg === 'plain') {
     return (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -104,6 +112,22 @@ export function BgSvg({ bg }: { bg: BackgroundType }) {
       <circle cx="6" cy="18" r="1.5" />
       <circle cx="12" cy="18" r="1.5" />
       <circle cx="18" cy="18" r="1.5" />
+    </svg>
+  );
+}
+
+export function PaperThemeSvg({ theme }: { theme: 'dark' | 'light' }) {
+  if (theme === 'light') {
+    return (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
     </svg>
   );
 }

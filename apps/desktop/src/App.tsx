@@ -61,6 +61,7 @@ import {
   HelpSvg,
   HighlighterSvg,
   LineSvg,
+  PaperThemeSvg,
   PenSvg,
   RectSvg,
   RedoSvg,
@@ -236,15 +237,25 @@ export default function App() {
   const dotPatternCacheRef = useRef<{
     stepKey: number;
     dpr: number;
+    theme: 'dark' | 'light';
     pattern: CanvasPattern;
     tileSize: number;
   } | null>(null);
   const gridPatternCacheRef = useRef<{
     stepKey: number;
     dpr: number;
+    theme: 'dark' | 'light';
     pattern: CanvasPattern;
     tileSize: number;
   } | null>(null);
+  const linedPatternCacheRef = useRef<{
+    stepKey: number;
+    dpr: number;
+    theme: 'dark' | 'light';
+    pattern: CanvasPattern;
+    tileSize: number;
+  } | null>(null);
+  const paperGrainPatternRef = useRef<CanvasPattern | null>(null);
   const saveTimerRef            = useRef<number | null>(null);
   const dirtyStaticRef          = useRef<boolean>(false);
   const dirtyActiveRef          = useRef<boolean>(false);
@@ -511,8 +522,34 @@ export default function App() {
     const dpr = dprRef.current;
     const w   = vpWidthRef.current;
     const h   = vpHeightRef.current;
+    const theme = settingsRef.current.paperTheme;
+    const isLight = theme === 'light';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
+
+    if (isLight) {
+      ctx.fillStyle = '#f7f4eb';
+      ctx.fillRect(0, 0, w, h);
+      if (!paperGrainPatternRef.current) {
+        const gCanvas = document.createElement('canvas');
+        gCanvas.width = 96;
+        gCanvas.height = 96;
+        const gCtx = gCanvas.getContext('2d');
+        if (gCtx) {
+          for (let i = 0; i < 220; i++) {
+            const gx = (i * 37) % 96;
+            const gy = (i * 61) % 96;
+            gCtx.fillStyle = i % 2 === 0 ? 'rgba(120, 96, 64, 0.035)' : 'rgba(255, 255, 255, 0.06)';
+            gCtx.fillRect(gx, gy, 1.5, 1.5);
+          }
+          paperGrainPatternRef.current = ctx.createPattern(gCanvas, 'repeat');
+        }
+      }
+      if (paperGrainPatternRef.current) {
+        ctx.fillStyle = paperGrainPatternRef.current;
+        ctx.fillRect(0, 0, w, h);
+      }
+    }
 
     const cam  = cameraRef.current;
     const step = 32 * cam.zoom;
@@ -524,19 +561,19 @@ export default function App() {
 
       if (bg === 'dots') {
         let cached = dotPatternCacheRef.current;
-        if (!cached || cached.stepKey !== stepKey || cached.dpr !== dpr) {
+        if (!cached || cached.stepKey !== stepKey || cached.dpr !== dpr || cached.theme !== theme) {
           const tileSize = 64;
           const tileCanvas = document.createElement('canvas');
           tileCanvas.width = tileSize;
           tileCanvas.height = tileSize;
           const tCtx = tileCanvas.getContext('2d');
           if (tCtx) {
-            tCtx.fillStyle = '#1e293b';
+            tCtx.fillStyle = isLight ? 'rgba(100, 116, 139, 0.4)' : '#1e293b';
             const dotSize = (1.5 * tileSize) / step;
             tCtx.fillRect(0, 0, dotSize, dotSize);
             const pattern = ctx.createPattern(tileCanvas, 'repeat');
             if (pattern && typeof pattern.setTransform === 'function') {
-              cached = { stepKey, dpr, pattern, tileSize };
+              cached = { stepKey, dpr, theme, pattern, tileSize };
               dotPatternCacheRef.current = cached;
             }
           }
@@ -549,21 +586,46 @@ export default function App() {
         }
       } else if (bg === 'grid') {
         let cached = gridPatternCacheRef.current;
-        if (!cached || cached.stepKey !== stepKey || cached.dpr !== dpr) {
+        if (!cached || cached.stepKey !== stepKey || cached.dpr !== dpr || cached.theme !== theme) {
           const tileSize = 64;
           const tileCanvas = document.createElement('canvas');
           tileCanvas.width = tileSize;
           tileCanvas.height = tileSize;
           const tCtx = tileCanvas.getContext('2d');
           if (tCtx) {
-            tCtx.fillStyle = 'rgba(30, 41, 59, 0.75)';
+            tCtx.fillStyle = isLight ? 'rgba(148, 163, 184, 0.34)' : 'rgba(30, 41, 59, 0.75)';
             const lineW = Math.max(0.75, tileSize / step);
             tCtx.fillRect(0, 0, tileSize, lineW);
             tCtx.fillRect(0, 0, lineW, tileSize);
             const pattern = ctx.createPattern(tileCanvas, 'repeat');
             if (pattern && typeof pattern.setTransform === 'function') {
-              cached = { stepKey, dpr, pattern, tileSize };
+              cached = { stepKey, dpr, theme, pattern, tileSize };
               gridPatternCacheRef.current = cached;
+            }
+          }
+        }
+        if (cached && typeof cached.pattern.setTransform === 'function') {
+          const scale = step / cached.tileSize;
+          cached.pattern.setTransform({ a: scale, b: 0, c: 0, d: scale, e: offX, f: offY });
+          ctx.fillStyle = cached.pattern;
+          ctx.fillRect(0, 0, w, h);
+        }
+      } else if (bg === 'lined') {
+        let cached = linedPatternCacheRef.current;
+        if (!cached || cached.stepKey !== stepKey || cached.dpr !== dpr || cached.theme !== theme) {
+          const tileSize = 64;
+          const tileCanvas = document.createElement('canvas');
+          tileCanvas.width = tileSize;
+          tileCanvas.height = tileSize;
+          const tCtx = tileCanvas.getContext('2d');
+          if (tCtx) {
+            tCtx.fillStyle = isLight ? 'rgba(59, 130, 246, 0.22)' : 'rgba(56, 189, 248, 0.14)';
+            const lineW = Math.max(0.75, tileSize / step);
+            tCtx.fillRect(0, 0, tileSize, lineW);
+            const pattern = ctx.createPattern(tileCanvas, 'repeat');
+            if (pattern && typeof pattern.setTransform === 'function') {
+              cached = { stepKey, dpr, theme, pattern, tileSize };
+              linedPatternCacheRef.current = cached;
             }
           }
         }
@@ -1038,7 +1100,7 @@ export default function App() {
         lastZoomPctRef.current = pct;
         setZoomPct(pct);
       }
-      if (parsed.bgType === 'dots' || parsed.bgType === 'grid' || parsed.bgType === 'plain') {
+      if (parsed.bgType === 'dots' || parsed.bgType === 'grid' || parsed.bgType === 'lined' || parsed.bgType === 'plain') {
         bgTypeRef.current = parsed.bgType;
         setBgType(parsed.bgType);
       }
@@ -1102,7 +1164,7 @@ export default function App() {
           lastZoomPctRef.current = 100;
           setZoomPct(100);
         }
-        if (pg.bgType === 'dots' || pg.bgType === 'grid' || pg.bgType === 'plain') {
+        if (pg.bgType === 'dots' || pg.bgType === 'grid' || pg.bgType === 'lined' || pg.bgType === 'plain') {
           bgTypeRef.current = pg.bgType;
           setBgType(pg.bgType);
         }
@@ -1172,13 +1234,27 @@ export default function App() {
   }, [syncHistoryFlags, scheduleRender, scheduleSave]);
 
   const cycleBg = useCallback(() => {
-    const order: BackgroundType[] = ['dots', 'grid', 'plain'];
+    const order: BackgroundType[] = ['dots', 'grid', 'lined', 'plain'];
     const next = order[(order.indexOf(bgTypeRef.current) + 1) % order.length];
     bgTypeRef.current = next;
     setBgType(next);
     scheduleRender({ static: true });
     scheduleSave();
   }, [scheduleRender, scheduleSave]);
+
+  const togglePaperTheme = useCallback(() => {
+    const nextTheme = settingsRef.current.paperTheme === 'light' ? 'dark' : 'light';
+    const nextSettings = { ...settingsRef.current, paperTheme: nextTheme };
+    settingsRef.current = nextSettings;
+    setSettings(nextSettings);
+    saveSettings(nextSettings);
+    if (nextTheme === 'light' && colorRef.current === '#f8fafc') {
+      setColor('#1e293b');
+    } else if (nextTheme === 'dark' && colorRef.current === '#1e293b') {
+      setColor('#f8fafc');
+    }
+    scheduleRender({ static: true, active: true });
+  }, [scheduleRender]);
 
   const eraseAtPoint = useCallback((wp: Point2D, buffer: ErasedEntry[]) => {
     const radius = Math.max(widthRef.current * 1.5, 8 / cameraRef.current.zoom);
@@ -1431,9 +1507,16 @@ export default function App() {
     windowCenterRef.current.y      += dy;
     needsWindowAlignRef.current     = true;
 
-    // In move or select mode, let the cursor reach over the top/bottom toolbars (6px edge margin).
+    const cam = cameraRef.current;
+    const sx = (cursorTargetWorldRef.current.x - cam.x) * cam.zoom;
+    const sy = (cursorTargetWorldRef.current.y - cam.y) * cam.zoom;
+    const overUi =
+      typeof document !== 'undefined' &&
+      Boolean(document.elementFromPoint(sx, sy)?.closest('[data-scripta-ui="true"]'));
+
+    // Don't scroll canvas when Ctrl+hovering over top/floating UI menus
     const margin = (modHeldRef.current || toolRef.current === 'select') ? 6 : 56;
-    const panned = autoPanToWorldPoint(cursorTargetWorldRef.current, margin);
+    const panned = overUi ? false : autoPanToWorldPoint(cursorTargetWorldRef.current, margin);
     scheduleRender({ static: panned, active: true });
   }, [autoPanToWorldPoint, scheduleRender]);
 
@@ -2064,7 +2147,7 @@ export default function App() {
                 break;
               }
             }
-            if (toolRef.current === 'select') {
+            if (modHeldRef.current || toolRef.current === 'select') {
               const byId = buildElementMap();
               const hitR = 8 / cam.zoom;
               let hitEl: BoardElement | null = null;
@@ -2959,7 +3042,9 @@ export default function App() {
       })()}
 
       {/* ── Primary Header Toolbar ── */}
-      <div style={{
+      <div
+        data-scripta-ui="true"
+        style={{
         position: 'fixed', top: 14, left: '50%', transform: 'translateX(-50%)',
         display: 'flex', alignItems: 'center', gap: 5, padding: '6px 10px',
         background: 'rgba(15,23,42,0.92)', border: '1px solid #334155',
@@ -3051,10 +3136,13 @@ export default function App() {
         <Divider />
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '0 2px' }}>
-          {COLORS.map((c) => (
+          {(settings.paperTheme === 'light'
+            ? ['#1e293b', '#0284c7', '#059669', '#d97706', '#e11d48']
+            : COLORS
+          ).map((c) => (
             <button key={c} onClick={() => setColor(c)} title={`Color ${c}`} aria-label={`Color ${c}`} style={{
               width: 18, height: 18, borderRadius: '50%', background: c, padding: 0, cursor: 'pointer',
-              border: color === c ? '2px solid #fff' : '2px solid transparent',
+              border: color === c ? (settings.paperTheme === 'light' ? '2px solid #0f172a' : '2px solid #fff') : '2px solid transparent',
               boxSizing: 'border-box',
             }} />
           ))}
@@ -3089,6 +3177,15 @@ export default function App() {
           style={iconBtnStyle(false)}
         >
           <BgSvg bg={bgType} />
+        </button>
+
+        <button
+          onClick={togglePaperTheme}
+          title={`Paper theme: ${settings.paperTheme === 'light' ? 'Light Paper' : 'Dark'} (click to switch)`}
+          aria-label={`Paper theme: ${settings.paperTheme}`}
+          style={iconBtnStyle(settings.paperTheme === 'light')}
+        >
+          <PaperThemeSvg theme={settings.paperTheme} />
         </button>
 
         <Divider />

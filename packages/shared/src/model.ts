@@ -17,7 +17,9 @@ export type ConnectorRouting = 'straight' | 'orthogonal';
 
 export type StrokeStyle = 'solid' | 'dashed' | 'dotted';
 
-export type BackgroundType = 'dots' | 'grid' | 'plain';
+export type BackgroundType = 'dots' | 'grid' | 'lined' | 'plain';
+
+export type PaperTheme = 'dark' | 'light';
 
 export interface StrokePoint {
   x: number;

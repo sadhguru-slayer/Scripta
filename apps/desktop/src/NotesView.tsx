@@ -690,6 +690,14 @@ function pagePreviewPattern(bgType: string): React.CSSProperties {
       backgroundSize: '16px 16px',
     };
   }
+  if (bgType === 'lined') {
+    return {
+      position: 'absolute',
+      inset: 0,
+      backgroundImage: 'linear-gradient(to bottom, rgba(56,189,248,0.14) 1px, transparent 1px)',
+      backgroundSize: '100% 16px',
+    };
+  }
   if (bgType === 'plain') {
     return { position: 'absolute', inset: 0 };
   }

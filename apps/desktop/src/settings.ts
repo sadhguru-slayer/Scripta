@@ -2,6 +2,7 @@ import {
   DEFAULT_CURSOR_GLIDE_MS,
   DEFAULT_PHONE_SMOOTHNESS,
   DEFAULT_WRITING_WINDOW_RATIO,
+  type PaperTheme,
 } from '@scripta/shared';
 
 export interface AppSettings {
@@ -11,6 +12,8 @@ export interface AppSettings {
   cursorGlideMs: number;
   /** Writing window fill ratio in [0.2, 0.9]. Smaller = smaller text on desktop. */
   writingWindowRatio: number;
+  /** Canvas theme ('dark' or 'light' paper view). */
+  paperTheme: PaperTheme;
   /** Whether to auto-open the tutorial on first board entry. */
   showTutorialOnStart: boolean;
 }
@@ -21,6 +24,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   phoneSmoothness: DEFAULT_PHONE_SMOOTHNESS,
   cursorGlideMs: DEFAULT_CURSOR_GLIDE_MS,
   writingWindowRatio: DEFAULT_WRITING_WINDOW_RATIO,
+  paperTheme: 'dark',
   showTutorialOnStart: true,
 };
 
@@ -51,6 +55,7 @@ export function loadSettings(): AppSettings {
         0.2,
         0.9,
       ),
+      paperTheme: parsed.paperTheme === 'light' ? 'light' : 'dark',
       showTutorialOnStart: parsed.showTutorialOnStart !== false,
     };
   } catch {
