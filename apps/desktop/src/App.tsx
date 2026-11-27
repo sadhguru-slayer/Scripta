@@ -815,18 +815,22 @@ export default function App() {
 
       let vx = 0;
       let vy = 0;
-      if (sx < edgeMargin) {
-        vx = -Math.min(1, Math.max(0, (edgeMargin - sx) / edgeMargin)) * maxSpeedPx;
-      } else if (sx > vw - edgeMargin) {
-        vx = Math.min(1, Math.max(0, (sx - (vw - edgeMargin)) / edgeMargin)) * maxSpeedPx;
-      }
-      if (sy < edgeMargin) {
-        vy = -Math.min(1, Math.max(0, (edgeMargin - sy) / edgeMargin)) * maxSpeedPx;
-      } else if (sy > vh - edgeMargin) {
-        vy = Math.min(1, Math.max(0, (sy - (vh - edgeMargin)) / edgeMargin)) * maxSpeedPx;
+      // Only trigger PC-viewport edge scrolling for cursor move mode (Ctrl / 2-hand glide)
+      // or local mouse drawing — NOT when writing in the middle of the phone pad.
+      if (hasActiveRemoteMove || hasActiveLocalDraw) {
+        if (sx < edgeMargin) {
+          vx = -Math.min(1, Math.max(0, (edgeMargin - sx) / edgeMargin)) * maxSpeedPx;
+        } else if (sx > vw - edgeMargin) {
+          vx = Math.min(1, Math.max(0, (sx - (vw - edgeMargin)) / edgeMargin)) * maxSpeedPx;
+        }
+        if (sy < edgeMargin) {
+          vy = -Math.min(1, Math.max(0, (edgeMargin - sy) / edgeMargin)) * maxSpeedPx;
+        } else if (sy > vh - edgeMargin) {
+          vy = Math.min(1, Math.max(0, (sy - (vh - edgeMargin)) / edgeMargin)) * maxSpeedPx;
+        }
       }
 
-      // Also scroll & extend line when stylus/finger is held near the phone pad's own edges
+      // Scroll & extend line during phone drawing only when stylus/finger is near the phone pad's edges
       if (hasActiveRemoteDraw) {
         const phoneEdge = 0.06;
         for (const strokeId of activeRemoteRef.current.keys()) {
@@ -1365,7 +1369,7 @@ export default function App() {
     scheduleSave();
   }, [scheduleRender, scheduleSave]);
 
-  const autoPanToWorldPoint = useCallback((pt: Point2D, margin = 8): boolean => {
+  const autoPanToWorldPoint = useCallback((pt: Point2D, margin = 24): boolean => {
     const cam    = cameraRef.current;
     const w      = vpWidthRef.current;
     const h      = vpHeightRef.current;
