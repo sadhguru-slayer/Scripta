@@ -255,10 +255,19 @@ export default function App() {
 
   // Modifier / panning
   const modHeldRef         = useRef(false);
+  const altHeldRef         = useRef(false);
   const shiftHeldRef       = useRef(false);
   const spaceHeldRef       = useRef(false);
   const panningRef         = useRef<{ startX: number; startY: number; camX: number; camY: number } | null>(null);
   const lastMouseClientRef = useRef<Point2D | null>(null);
+  const remoteDragRef      = useRef<{
+    strokeId: string;
+    elementId: string;
+    orig: BoardElement;
+    snapshots: Map<string, BoardElement>;
+    dx: number;
+    dy: number;
+  } | null>(null);
 
   // WebSocket
   const wsRef = useRef<WebSocket | null>(null);
@@ -1491,6 +1500,37 @@ export default function App() {
     scheduleRender({ active: true });
   }, [sendToMobile, scheduleRender]);
 
+  // Prevent browser page zoom (trackpad pinch) & horizontal back-swipe navigation on /draw
+  useEffect(() => {
+    if (route !== '/draw') return;
+    const prevHtmlOverscroll = document.documentElement.style.overscrollBehavior;
+    const prevBodyOverscroll = document.body.style.overscrollBehavior;
+    document.documentElement.style.overscrollBehavior = 'none';
+    document.body.style.overscrollBehavior = 'none';
+
+    const preventBrowserZoom = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+      }
+    };
+    const preventGesture = (e: Event) => {
+      e.preventDefault();
+    };
+    window.addEventListener('wheel', preventBrowserZoom, { passive: false });
+    window.addEventListener('gesturestart', preventGesture, { passive: false });
+    window.addEventListener('gesturechange', preventGesture, { passive: false });
+    window.addEventListener('gestureend', preventGesture, { passive: false });
+
+    return () => {
+      document.documentElement.style.overscrollBehavior = prevHtmlOverscroll;
+      document.body.style.overscrollBehavior = prevBodyOverscroll;
+      window.removeEventListener('wheel', preventBrowserZoom);
+      window.removeEventListener('gesturestart', preventGesture);
+      window.removeEventListener('gesturechange', preventGesture);
+      window.removeEventListener('gestureend', preventGesture);
+    };
+  }, [route]);
+
   // ── Keyboard shortcuts ───────────────────────────────────────────────────
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -1535,6 +1575,10 @@ export default function App() {
       }
       if (e.key === 'Shift') {
         shiftHeldRef.current = true;
+      }
+      if (e.key === 'Alt') {
+        e.preventDefault();
+        altHeldRef.current = true;
       }
       if ((e.key === 'Control' || e.key === 'Meta') && !modHeldRef.current) {
         enterMoveMode();
@@ -1711,13 +1755,34 @@ export default function App() {
       case 'stroke.start': {
         const { strokeId, deviceId, tool: rawTool, color: c, width: bw, point } = msg.payload;
 
-        if (modHeldRef.current || toolRef.current === 'select') {
+        if (modHeldRef.current || altHeldRef.current || toolRef.current === 'select') {
           remotePrevNormRef.current.set(strokeId, { x: point.x, y: point.y });
           remoteMoveMetaRef.current.set(strokeId, {
             startNorm: { x: point.x, y: point.y },
             maxDistSq: 0,
             startedAt: Date.now(),
           });
+          if (altHeldRef.current && selectedIdRef.current) {
+            const sel = elementsRef.current.find((el) => el.id === selectedIdRef.current);
+            if (sel) {
+              const snaps = new Map<string, BoardElement>([[sel.id, sel]]);
+              if (isShapeElement(sel)) {
+                for (const el of elementsRef.current) {
+                  if (isConnectorElement(el) && (el.startBinding?.elementId === sel.id || el.endBinding?.elementId === sel.id)) {
+                    snaps.set(el.id, el);
+                  }
+                }
+              }
+              remoteDragRef.current = {
+                strokeId,
+                elementId: sel.id,
+                orig: sel,
+                snapshots: snaps,
+                dx: 0,
+                dy: 0,
+              };
+            }
+          }
           break;
         }
 
@@ -1825,7 +1890,23 @@ export default function App() {
             cameraRef.current,
             vpWidthRef.current,
           );
-          moveCursorBy(dx, dy);
+          const rDrag = remoteDragRef.current;
+          if (rDrag && rDrag.strokeId === strokeId) {
+            rDrag.dx += dx;
+            rDrag.dy += dy;
+            const idx = elementsRef.current.findIndex((el) => el.id === rDrag.elementId);
+            if (idx !== -1) {
+              let moved = translateElement(rDrag.orig, rDrag.dx, rDrag.dy);
+              if (isConnectorElement(moved)) {
+                moved = { ...moved, startBinding: null, endBinding: null };
+              }
+              elementsRef.current[idx] = moved;
+              syncBoundConnectors(elementsRef.current);
+              scheduleRender({ static: true, active: true });
+            }
+          } else {
+            moveCursorBy(dx, dy);
+          }
           remotePrevNormRef.current.set(strokeId, { x: newest.x, y: newest.y });
           break;
         }
@@ -1946,6 +2027,24 @@ export default function App() {
         remoteStartRawPointRef.current.delete(strokeId);
 
         if (wasMoveGesture) {
+          const rDrag = remoteDragRef.current;
+          if (rDrag && rDrag.strokeId === strokeId) {
+            remoteDragRef.current = null;
+            const patches: ElementPatch[] = [];
+            for (const [id, before] of rDrag.snapshots.entries()) {
+              const after = elementsRef.current.find((el) => el.id === id);
+              if (after && after !== before) {
+                patches.push({ before, after });
+              }
+            }
+            if (patches.length > 0) {
+              historyRef.current.push({ type: 'patch', patches });
+              syncHistoryFlags();
+              scheduleSave();
+            }
+            scheduleRender({ static: true, active: true });
+            break;
+          }
           if (moveMeta && moveMeta.maxDistSq < 0.0004 && Date.now() - moveMeta.startedAt < 320) {
             const cam = cameraRef.current;
             const wp  = cursorTargetWorldRef.current;
@@ -3014,36 +3113,77 @@ export default function App() {
             if (phoneConnected) setShowDevicesMenu((v) => !v);
             else void startPairing();
           }}
-          title={phoneConnected ? 'Connected devices & pairing' : 'Connect phone as wireless tablet'}
+          title={
+            phoneConnected
+              ? (modHeld ? 'Phone connected (Move mode) — click for devices' : 'Phone connected — click for devices')
+              : 'Connect phone as wireless tablet'
+          }
+          aria-label={phoneConnected ? 'Connected devices' : 'Connect phone'}
           style={{
+            position: 'relative',
             height: 32,
-            width: 112,
+            width: 32,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: 7,
             borderRadius: 8,
-            fontSize: 12,
-            fontWeight: 500,
             cursor: 'pointer',
-            whiteSpace: 'nowrap',
-            color: '#f8fafc',
+            flexShrink: 0,
+            color: phoneConnected ? '#f8fafc' : '#7dd3fc',
             background: phoneConnected
-              ? (modHeld ? '#0369a1' : '#065f46')
-              : '#0284c7',
-            border: `1px solid ${phoneConnected ? (modHeld ? '#38bdf8' : '#10b981') : '#38bdf8'}`,
+              ? (modHeld ? 'rgba(3, 105, 161, 0.55)' : 'rgba(6, 95, 70, 0.55)')
+              : 'rgba(2, 132, 199, 0.16)',
+            border: `1px solid ${phoneConnected ? (modHeld ? 'rgba(56,189,248,0.6)' : 'rgba(16,185,129,0.55)') : 'rgba(56,189,248,0.4)'}`,
+          }}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect width="14" height="20" x="5" y="2" rx="2" ry="2" />
+            <path d="M12 18h.01" />
+          </svg>
+          <span style={{
+            position: 'absolute',
+            top: 4,
+            right: 4,
+            width: 6,
+            height: 6,
+            borderRadius: '50%',
+            background: phoneConnected ? (modHeld ? '#38bdf8' : '#34d399') : '#94a3b8',
+          }} />
+        </button>
+      </div>
+
+      {/* ── Subtle low-opacity canvas status indicator ── */}
+      {phoneConnected && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: 16,
+            left: 16,
+            zIndex: 10,
+            pointerEvents: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '4px 10px',
+            borderRadius: 999,
+            background: 'rgba(15, 23, 42, 0.45)',
+            border: '1px solid rgba(148, 163, 184, 0.14)',
+            color: '#cbd5e1',
+            fontSize: 11,
+            fontWeight: 500,
+            opacity: 0.55,
+            userSelect: 'none',
           }}
         >
           <span style={{
-            width: 7,
-            height: 7,
+            width: 6,
+            height: 6,
             borderRadius: '50%',
-            flexShrink: 0,
-            background: phoneConnected ? (modHeld ? '#38bdf8' : '#34d399') : '#e0f2fe',
+            background: modHeld ? '#38bdf8' : '#34d399',
           }} />
-          <span>{phoneConnected ? (modHeld ? 'Moving' : 'Connected') : 'Connect'}</span>
-        </button>
-      </div>
+          <span>{modHeld ? 'Moving' : 'Phone'}</span>
+        </div>
+      )}
 
       {/* ── Connected Devices Popover ── */}
       {showDevicesMenu && (

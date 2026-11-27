@@ -31,10 +31,12 @@ func NewServer(h *hub.Hub, st *store.Store, log *slog.Logger) http.Handler {
 	mux.HandleFunc("POST /api/sessions/{sessionId}/devices/{deviceId}/kick", s.handleKickDevice)
 	mux.HandleFunc("GET /api/notebooks", s.handleListNotebooks)
 	mux.HandleFunc("POST /api/notebooks", s.handleCreateNotebook)
+	mux.HandleFunc("PATCH /api/notebooks/{id}", s.handleRenameNotebook)
 	mux.HandleFunc("DELETE /api/notebooks/{id}", s.handleDeleteNotebook)
 	mux.HandleFunc("POST /api/notebooks/{id}/pages", s.handleCreatePage)
 	mux.HandleFunc("GET /api/pages/{id}", s.handleGetPage)
 	mux.HandleFunc("PUT /api/pages/{id}", s.handleSavePage)
+	mux.HandleFunc("PATCH /api/pages/{id}", s.handleRenamePage)
 	mux.HandleFunc("DELETE /api/pages/{id}", s.handleDeletePage)
 	mux.HandleFunc("GET /ws", s.handleWS)
 	return mux
@@ -198,6 +200,35 @@ func (s *Server) handleCreateNotebook(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, nb)
 }
 
+func (s *Server) handleRenameNotebook(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "database unavailable")
+		return
+	}
+	var body struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	title := strings.TrimSpace(body.Title)
+	if title == "" {
+		writeError(w, http.StatusBadRequest, "title is required")
+		return
+	}
+	err := s.store.RenameNotebook(r.PathValue("id"), title)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "notebook not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to rename notebook")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "title": title})
+}
+
 func (s *Server) handleDeleteNotebook(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		writeError(w, http.StatusServiceUnavailable, "database unavailable")
@@ -249,6 +280,35 @@ func (s *Server) handleGetPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, pg)
+}
+
+func (s *Server) handleRenamePage(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "database unavailable")
+		return
+	}
+	var body struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	title := strings.TrimSpace(body.Title)
+	if title == "" {
+		writeError(w, http.StatusBadRequest, "title is required")
+		return
+	}
+	err := s.store.RenamePage(r.PathValue("id"), title)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to rename page")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "title": title})
 }
 
 func (s *Server) handleSavePage(w http.ResponseWriter, r *http.Request) {

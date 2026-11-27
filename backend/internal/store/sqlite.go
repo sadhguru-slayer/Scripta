@@ -225,6 +225,9 @@ func (s *Store) DeleteNotebook(id string) error {
 	if n == 0 {
 		return ErrNotFound
 	}
+	if n == 0 {
+		return ErrNotFound
+	}
 	return nil
 }
 
@@ -265,6 +268,9 @@ func (s *Store) DeletePage(id string) error {
 		return err
 	}
 	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
 	if n == 0 {
 		return ErrNotFound
 	}
@@ -336,6 +342,9 @@ func (s *Store) SavePage(id, title, bgType string, camera json.RawMessage, eleme
 	if n == 0 {
 		return ErrNotFound
 	}
+	if n == 0 {
+		return ErrNotFound
+	}
 
 	if _, err := tx.Exec(`DELETE FROM elements WHERE page_id = ?`, id); err != nil {
 		return err
@@ -369,6 +378,32 @@ func (s *Store) SavePage(id, title, bgType string, camera json.RawMessage, eleme
 
 	_, _ = tx.Exec(`UPDATE notebooks SET updated_at = ? WHERE id = (SELECT notebook_id FROM pages WHERE id = ?)`, now, id)
 	return tx.Commit()
+}
+
+func (s *Store) RenameNotebook(id, title string) error {
+	now := time.Now().UnixMilli()
+	res, err := s.db.Exec(`UPDATE notebooks SET title = ?, updated_at = ? WHERE id = ?`, title, now, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) RenamePage(id, title string) error {
+	now := time.Now().UnixMilli()
+	res, err := s.db.Exec(`UPDATE pages SET title = ?, updated_at = ? WHERE id = ?`, title, now, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func newID(prefix string) string {
