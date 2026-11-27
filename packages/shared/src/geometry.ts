@@ -1,12 +1,13 @@
-import type {
-  Bounds,
-  Camera,
-  CursorSlideOptions,
-  CursorSlideResult,
-  Point2D,
-  Rect,
-  Stroke,
-  StrokePoint,
+import {
+  DEFAULT_WRITING_WINDOW_RATIO,
+  type Bounds,
+  type Camera,
+  type CursorSlideOptions,
+  type CursorSlideResult,
+  type Point2D,
+  type Rect,
+  type Stroke,
+  type StrokePoint,
 } from './model';
 
 /**
@@ -47,6 +48,201 @@ export function smoothPoint(
     x: prev.x + (next.x - prev.x) * alpha,
     y: prev.y + (next.y - prev.y) * alpha,
   };
+}
+
+export interface OneEuroState {
+  x: number;
+  y: number;
+  dx: number;
+  dy: number;
+  lastDt: number;
+}
+
+/** Creates initial state for a 2D One-Euro adaptive handwriting filter. */
+export function createOneEuroState(initial: Point2D, dtMs = 0): OneEuroState {
+  return { x: initial.x, y: initial.y, dx: 0, dy: 0, lastDt: dtMs };
+}
+
+function oneEuroAlpha(cutoffHz: number, dtSec: number): number {
+  const tau = 1 / (2 * Math.PI * cutoffHz);
+  return 1 / (1 + tau / dtSec);
+}
+
+/**
+ * Velocity-adaptive One-Euro filter for handwriting input.
+ * - Slow movements use a lower cutoff frequency to suppress finger/hand jitter.
+ * - Fast movements raise the cutoff proportionally to speed so loops and corners
+ *   stay crisp with minimal lag.
+ *
+ * `scale` normalizes coordinates to unit-space speed (use `1` for normalized [0,1]
+ * tablet coordinates, or `Math.max(width, height)` for pixel coordinates).
+ */
+export function filterOneEuroPoint(
+  state: OneEuroState,
+  raw: Point2D,
+  dtMs: number,
+  smoothness: number,
+  scale = 1,
+): Point2D {
+  const s = Number.isFinite(smoothness)
+    ? Math.max(0, Math.min(100, smoothness))
+    : 0;
+  const safeScale = scale > 0 && Number.isFinite(scale) ? scale : 1;
+  const deltaMs = Number.isFinite(dtMs) ? dtMs - state.lastDt : 16;
+  const dtSec = Math.max(0.002, Math.min(0.1, (deltaMs > 0 ? deltaMs : 16) / 1000));
+  state.lastDt = Number.isFinite(dtMs) ? dtMs : state.lastDt + 16;
+
+  if (s === 0) {
+    state.x = raw.x;
+    state.y = raw.y;
+    state.dx = 0;
+    state.dy = 0;
+    return raw;
+  }
+
+  const rawDx = (raw.x - state.x) / dtSec;
+  const rawDy = (raw.y - state.y) / dtSec;
+  const dAlpha = oneEuroAlpha(1.0, dtSec);
+  const edx = state.dx + (rawDx - state.dx) * dAlpha;
+  const edy = state.dy + (rawDy - state.dy) * dAlpha;
+  state.dx = edx;
+  state.dy = edy;
+
+  const speed = Math.hypot(edx, edy) / safeScale;
+  const t = s / 100;
+  const minCutoff = 4.2 - 3.55 * Math.pow(t, 0.85);
+  const beta = 1.8 + (1 - t) * 2.5;
+  const cutoff = minCutoff + beta * speed;
+  const alpha = oneEuroAlpha(cutoff, dtSec);
+
+  const nx = state.x + (raw.x - state.x) * alpha;
+  const ny = state.y + (raw.y - state.y) * alpha;
+  state.x = nx;
+  state.y = ny;
+  return { x: nx, y: ny };
+}
+
+export interface BeautifyStrokeOptions {
+  /** Smoothing strength in [0, 100]. 0 disables beautification. */
+  smoothness?: number;
+  /** Stroke base width in world/pixel units (scales simplification tolerance). */
+  baseWidth?: number;
+  /** Optional explicit simplification tolerance override. */
+  tolerance?: number;
+}
+
+function rdpSimplify(points: StrokePoint[], epsSq: number): StrokePoint[] {
+  const n = points.length;
+  if (n <= 2 || epsSq <= 0) return points.slice();
+
+  const keep = new Uint8Array(n);
+  keep[0] = 1;
+  keep[n - 1] = 1;
+
+  const stack: [number, number][] = [[0, n - 1]];
+  while (stack.length > 0) {
+    const [start, end] = stack.pop()!;
+    if (end - start <= 1) continue;
+    const a = points[start];
+    const b = points[end];
+    let maxDistSq = -1;
+    let maxIdx = -1;
+    for (let i = start + 1; i < end; i++) {
+      const dSq = pointToSegmentDistSq(points[i], a, b);
+      if (dSq > maxDistSq) {
+        maxDistSq = dSq;
+        maxIdx = i;
+      }
+    }
+    if (maxIdx !== -1 && maxDistSq > epsSq) {
+      keep[maxIdx] = 1;
+      stack.push([start, maxIdx], [maxIdx, end]);
+    }
+  }
+
+  const result: StrokePoint[] = [];
+  for (let i = 0; i < n; i++) {
+    if (keep[i]) result.push(points[i]);
+  }
+  return result;
+}
+
+/**
+ * Post-stroke handwriting beautifier:
+ * 1. Preserves tiny dot/tap strokes untouched.
+ * 2. Applies Ramer-Douglas-Peucker simplification to remove clustered digitizer noise.
+ * 3. Runs corner-preserving weighted smoothing so curves look neat while sharp
+ *    letter corners (e.g. A, M, W, 7, 2) stay crisp.
+ */
+export function beautifyStrokePoints(
+  points: StrokePoint[],
+  options?: BeautifyStrokeOptions,
+): StrokePoint[] {
+  if (points.length <= 2) return points.slice();
+  const s = Number.isFinite(options?.smoothness)
+    ? Math.max(0, Math.min(100, options!.smoothness!))
+    : 40;
+  if (s === 0) return points.slice();
+
+  const baseWidth = Math.max(1, options?.baseWidth ?? 3);
+  let arcLen = 0;
+  for (let i = 1; i < points.length; i++) {
+    arcLen += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+  }
+  if (arcLen < baseWidth * 1.25) {
+    return points.slice();
+  }
+
+  const t = s / 100;
+  const eps = options?.tolerance ?? Math.max(0.2, baseWidth * 0.1) * (0.35 + 0.65 * t);
+  let pts = rdpSimplify(points, eps * eps);
+  if (pts.length <= 2) return pts;
+
+  const passes = s >= 65 ? 2 : 1;
+  const weight = 0.18 + 0.24 * t;
+
+  for (let pass = 0; pass < passes; pass++) {
+    const next: StrokePoint[] = [pts[0]];
+    for (let i = 1; i < pts.length - 1; i++) {
+      const prev = pts[i - 1];
+      const cur = pts[i];
+      const nxt = pts[i + 1];
+
+      const v1x = cur.x - prev.x;
+      const v1y = cur.y - prev.y;
+      const v2x = nxt.x - cur.x;
+      const v2y = nxt.y - cur.y;
+      const l1 = Math.hypot(v1x, v1y);
+      const l2 = Math.hypot(v2x, v2y);
+
+      if (l1 < 1e-6 || l2 < 1e-6) {
+        next.push(cur);
+        continue;
+      }
+
+      const cosTheta = (v1x * v2x + v1y * v2y) / (l1 * l2);
+      // Preserve intentional sharp corners (> ~63 deg turn)
+      if (cosTheta < 0.45) {
+        next.push(cur);
+        continue;
+      }
+
+      const cornerFactor = (cosTheta - 0.45) / 0.55;
+      const alpha = weight * cornerFactor;
+      const avgX = 0.5 * (prev.x + nxt.x);
+      const avgY = 0.5 * (prev.y + nxt.y);
+      next.push({
+        x: cur.x + (avgX - cur.x) * alpha,
+        y: cur.y + (avgY - cur.y) * alpha,
+        p: cur.p,
+        dt: cur.dt,
+      });
+    }
+    next.push(pts[pts.length - 1]);
+    pts = next;
+  }
+
+  return pts;
 }
 
 /**
@@ -95,7 +291,7 @@ export function computeWritingWindow(
   camera: Camera,
   viewportW: number,
   viewportH: number,
-  fillRatio = 0.78,
+  fillRatio = DEFAULT_WRITING_WINDOW_RATIO,
 ): Rect {
   const safeAspect = phoneAspect > 0 ? phoneAspect : 9 / 16;
   const maxW = (viewportW / camera.zoom) * fillRatio;
@@ -142,7 +338,7 @@ export function alignWritingWindowCenter(
   camera: Camera,
   viewportW: number,
   viewportH: number,
-  fillRatio = 0.78,
+  fillRatio = DEFAULT_WRITING_WINDOW_RATIO,
 ): Point2D {
   const win = computeWritingWindow(
     targetWorld,

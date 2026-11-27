@@ -1,6 +1,7 @@
 import {
   DEFAULT_CURSOR_GLIDE_MS,
   DEFAULT_PHONE_SMOOTHNESS,
+  DEFAULT_WRITING_WINDOW_RATIO,
 } from '@scripta/shared';
 
 export interface AppSettings {
@@ -8,6 +9,8 @@ export interface AppSettings {
   phoneSmoothness: number;
   /** Cursor glide time constant in milliseconds. 0 = instant. */
   cursorGlideMs: number;
+  /** Writing window fill ratio in [0.2, 0.9]. Smaller = smaller text on desktop. */
+  writingWindowRatio: number;
   /** Whether to auto-open the tutorial on first board entry. */
   showTutorialOnStart: boolean;
 }
@@ -17,6 +20,7 @@ export const SETTINGS_KEY = 'scripta:settings:v1';
 export const DEFAULT_SETTINGS: AppSettings = {
   phoneSmoothness: DEFAULT_PHONE_SMOOTHNESS,
   cursorGlideMs: DEFAULT_CURSOR_GLIDE_MS,
+  writingWindowRatio: DEFAULT_WRITING_WINDOW_RATIO,
   showTutorialOnStart: true,
 };
 
@@ -41,6 +45,11 @@ export function loadSettings(): AppSettings {
         Number(parsed.cursorGlideMs ?? DEFAULT_SETTINGS.cursorGlideMs),
         0,
         120,
+      ),
+      writingWindowRatio: clamp(
+        Number(parsed.writingWindowRatio ?? DEFAULT_SETTINGS.writingWindowRatio),
+        0.2,
+        0.9,
       ),
       showTutorialOnStart: parsed.showTutorialOnStart !== false,
     };

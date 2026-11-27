@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   alignWritingWindowCenter,
   appendPointToBounds,
+  beautifyStrokePoints,
   buildStrokePath2D,
   computeBounds,
   computeFitCamera,
   computeWritingWindow,
+  createOneEuroState,
+  filterOneEuroPoint,
   hitTestStroke,
   normDeltaToWorld,
   screenToWorld,
@@ -14,6 +17,7 @@ import {
   windowNormToWorld,
   worldToScreen,
 } from './geometry';
+import { DEFAULT_WRITING_WINDOW_RATIO } from './model';
 
 describe('screenToWorld / worldToScreen round-trip', () => {
   it('inverts correctly at arbitrary camera state', () => {
@@ -188,7 +192,7 @@ describe('alignWritingWindowCenter', () => {
     // Without re-aligning (using stale center1 at zoom=1.6), touchNorm drifts away from targetWorld
     const staleWin = computeWritingWindow(center1, aspect, cam2, viewportW, viewportH);
     const staleMapped = windowNormToWorld(touchNorm.x, touchNorm.y, staleWin);
-    expect(Math.hypot(staleMapped.x - targetWorld.x, staleMapped.y - targetWorld.y)).toBeGreaterThan(50);
+    expect(Math.hypot(staleMapped.x - targetWorld.x, staleMapped.y - targetWorld.y)).toBeGreaterThan(25);
 
     // After re-aligning, touchNorm lands exactly at targetWorld
     const start2 = windowNormToWorld(touchNorm.x, touchNorm.y, win2);
@@ -359,5 +363,71 @@ describe('hitTestStroke / computeFitCamera', () => {
     const next = { x: 42, y: 24 };
     expect(smoothPoint(prev, next, Number.NaN)).toEqual(next);
     expect(smoothPoint(prev, next, Number.POSITIVE_INFINITY)).toEqual(next);
+  });
+
+  it('computeWritingWindow uses DEFAULT_WRITING_WINDOW_RATIO by default and scales with custom ratio', () => {
+    const aspect = 9 / 16;
+    const cam = { x: 0, y: 0, zoom: 1 };
+    const defWin = computeWritingWindow({ x: 0, y: 0 }, aspect, cam, 1440, 900);
+    const smallWin = computeWritingWindow({ x: 0, y: 0 }, aspect, cam, 1440, 900, 0.25);
+    const largeWin = computeWritingWindow({ x: 0, y: 0 }, aspect, cam, 1440, 900, 0.85);
+    expect(defWin.h).toBeCloseTo(900 * DEFAULT_WRITING_WINDOW_RATIO, 4);
+    expect(smallWin.h).toBeCloseTo(900 * 0.25, 4);
+    expect(largeWin.h).toBeCloseTo(900 * 0.85, 4);
+    expect(smallWin.h).toBeLessThan(defWin.h);
+    expect(defWin.h).toBeLessThan(largeWin.h);
+  });
+
+  it('filterOneEuroPoint returns raw at 0, damps slow jitter, and tracks fast strokes closely', () => {
+    const rawState = createOneEuroState({ x: 0, y: 0 }, 0);
+    expect(filterOneEuroPoint(rawState, { x: 0.5, y: 0.5 }, 16, 0, 1)).toEqual({ x: 0.5, y: 0.5 });
+
+    // Slow jitter around (0.5, 0.5) should be strongly damped
+    const slowState = createOneEuroState({ x: 0.5, y: 0.5 }, 0);
+    const jitter = [
+      { x: 0.502, y: 0.508 },
+      { x: 0.504, y: 0.492 },
+      { x: 0.506, y: 0.508 },
+      { x: 0.508, y: 0.492 },
+    ];
+    let maxDev = 0;
+    jitter.forEach((pt, idx) => {
+      const out = filterOneEuroPoint(slowState, pt, (idx + 1) * 16, 60, 1);
+      maxDev = Math.max(maxDev, Math.abs(out.y - 0.5));
+    });
+    expect(maxDev).toBeLessThan(0.008);
+
+    // Fast sweep should track closely without heavy lag
+    const fastState = createOneEuroState({ x: 0, y: 0 }, 0);
+    let last = { x: 0, y: 0 };
+    for (let i = 1; i <= 10; i++) {
+      last = filterOneEuroPoint(fastState, { x: i * 0.08, y: 0 }, i * 16, 60, 1);
+    }
+    expect(last.x).toBeGreaterThan(0.75);
+  });
+
+  it('beautifyStrokePoints preserves dots, simplifies noise, and keeps sharp corners', () => {
+    const dot = [
+      { x: 10, y: 10, p: 0.5, dt: 0 },
+      { x: 10.5, y: 10.4, p: 0.5, dt: 16 },
+    ];
+    expect(beautifyStrokePoints(dot, { smoothness: 60, baseWidth: 4 })).toEqual(dot);
+
+    // Sharp 90-degree L corner should remain crisp
+    const cornerPts = [
+      { x: 0, y: 0, p: 0.5, dt: 0 },
+      { x: 20, y: 0, p: 0.5, dt: 16 },
+      { x: 40, y: 0, p: 0.5, dt: 32 },
+      { x: 40, y: 20, p: 0.5, dt: 48 },
+      { x: 40, y: 40, p: 0.5, dt: 64 },
+    ];
+    const beautifiedCorner = beautifyStrokePoints(cornerPts, { smoothness: 70, baseWidth: 3 });
+    expect(beautifiedCorner[0]).toEqual(cornerPts[0]);
+    expect(beautifiedCorner[beautifiedCorner.length - 1]).toEqual(cornerPts[cornerPts.length - 1]);
+    // Corner vertex (40, 0) must be preserved
+    expect(beautifiedCorner.some((pt) => Math.abs(pt.x - 40) < 0.01 && Math.abs(pt.y) < 0.01)).toBe(true);
+
+    // Smoothness 0 returns copy unchanged
+    expect(beautifyStrokePoints(cornerPts, { smoothness: 0, baseWidth: 3 })).toEqual(cornerPts);
   });
 });

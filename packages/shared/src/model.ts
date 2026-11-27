@@ -126,3 +126,6 @@ export const DEFAULT_PHONE_SMOOTHNESS = 40;
 
 /** Default cursor glide time constant in milliseconds. */
 export const DEFAULT_CURSOR_GLIDE_MS = 38;
+
+/** Default writing window fill ratio (fraction of desktop viewport). */
+export const DEFAULT_WRITING_WINDOW_RATIO = 0.45;

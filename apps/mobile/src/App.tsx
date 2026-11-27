@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  beautifyStrokePoints,
+  createOneEuroState,
   DEFAULT_PHONE_SMOOTHNESS,
+  filterOneEuroPoint,
   renderSmoothStroke,
-  smoothPoint,
+  type OneEuroState,
   type ScriptaWsMessage,
   type StrokePoint,
   type ToolType,
@@ -143,7 +146,7 @@ export default function App() {
   } | null>(null);
   const undoFlashTimerRef  = useRef<number | null>(null);
   const lastPixelRef       = useRef<{ x: number; y: number } | null>(null);
-  const previewSmoothRef   = useRef<{ x: number; y: number } | null>(null);
+  const previewSmoothRef   = useRef<OneEuroState | null>(null);
   const strokeStartTsRef   = useRef<number>(0);
   const pendingPointsRef   = useRef<StrokePoint[]>([]);
   const activeStrokeIdRef  = useRef<string | null>(null);
@@ -408,6 +411,7 @@ export default function App() {
   const finishPadPointer = useCallback((cancelled: boolean) => {
     if (activePointerIdRef.current === null) return;
     const lastPixel = lastPixelRef.current;
+    const previewFilter = previewSmoothRef.current;
     activePointerIdRef.current = null;
     lastPixelRef.current       = null;
     previewSmoothRef.current   = null;
@@ -420,13 +424,23 @@ export default function App() {
     if (activePreviewRef.current) {
       if (!cancelled) {
         if (lastPixel) {
+          const dt = Date.now() - strokeStartTsRef.current;
+          const smoothness = toolStateRef.current.smoothness ?? DEFAULT_PHONE_SMOOTHNESS;
+          const { w, h } = vpSizeRef.current;
+          const endPt = previewFilter
+            ? filterOneEuroPoint(previewFilter, lastPixel, dt, smoothness, Math.max(w, h))
+            : lastPixel;
           activePreviewRef.current.points.push({
-            x: lastPixel.x,
-            y: lastPixel.y,
+            x: endPt.x,
+            y: endPt.y,
             p: 0.5,
-            dt: Date.now() - strokeStartTsRef.current,
+            dt,
           });
         }
+        activePreviewRef.current.points = beautifyStrokePoints(activePreviewRef.current.points, {
+          smoothness: toolStateRef.current.smoothness ?? DEFAULT_PHONE_SMOOTHNESS,
+          baseWidth: activePreviewRef.current.baseWidth,
+        });
         activePreviewRef.current.endedAt = performance.now();
         fadingPreviewsRef.current.push(activePreviewRef.current);
       }
@@ -476,7 +490,7 @@ export default function App() {
     const rotated = isSoftwareRotated(horizontalModeRef.current, w, h);
     const norm    = clientToTabletNorm(clientX, clientY, w, h, rotated);
     lastPixelRef.current = { x: clientX, y: clientY };
-    previewSmoothRef.current = { x: clientX, y: clientY };
+    previewSmoothRef.current = createOneEuroState({ x: clientX, y: clientY }, 0);
 
     const now = Date.now();
     strokeStartTsRef.current = now;
@@ -598,9 +612,16 @@ export default function App() {
       pendingPointsRef.current.push({ x: norm.x, y: norm.y, p, dt });
       if (previewStroke) {
         const rawPx = { x: pt.clientX, y: pt.clientY };
-        const prevSmooth = previewSmoothRef.current ?? rawPx;
-        const smoothed = smoothPoint(prevSmooth, rawPx, smoothness);
-        previewSmoothRef.current = smoothed;
+        if (!previewSmoothRef.current) {
+          previewSmoothRef.current = createOneEuroState(rawPx, dt);
+        }
+        const smoothed = filterOneEuroPoint(
+          previewSmoothRef.current,
+          rawPx,
+          dt,
+          smoothness,
+          Math.max(w, h),
+        );
         previewStroke.points.push({ x: smoothed.x, y: smoothed.y, p, dt });
         addedPreview = true;
       }

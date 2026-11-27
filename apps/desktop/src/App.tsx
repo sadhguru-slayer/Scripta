@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import {
   alignWritingWindowCenter,
   appendPointToBounds,
+  beautifyStrokePoints,
   buildStrokePath2D,
   computeBoardBounds,
   computeBounds,
@@ -10,7 +11,9 @@ import {
   computeFitCamera,
   computeShapeBounds,
   computeWritingWindow,
+  createOneEuroState,
   elementIntersectsBounds,
+  filterOneEuroPoint,
   findSnapAnchor,
   getConnectorMidpoint,
   getShapeAnchors,
@@ -24,7 +27,6 @@ import {
   resolveConnectorEndpoints,
   screenToWorld,
   snapLineEnd,
-  smoothPoint,
   stepCursorPosition,
   syncBoundConnectors,
   translateElement,
@@ -36,6 +38,7 @@ import {
   type ConnectorElement,
   type ConnectorRouting,
   type ElementBinding,
+  type OneEuroState,
   type Point2D,
   type ScriptaWsMessage,
   type ShapeElement,
@@ -317,7 +320,7 @@ export default function App() {
   const editingElIdRef     = useRef(editingElId);
   const phoneConnectedRef  = useRef(false);
   const settingsRef            = useRef<AppSettings>(settings);
-  const remoteSmoothNormRef    = useRef<Map<string, Point2D>>(new Map());
+  const remoteSmoothNormRef    = useRef<Map<string, OneEuroState>>(new Map());
   const remoteLastRawPointRef  = useRef<Map<string, StrokePoint>>(new Map());
   const suppressTutorialRef    = useRef(false);
   const modalOpenRef           = useRef(false);
@@ -433,6 +436,7 @@ export default function App() {
         cameraRef.current,
         vpWidthRef.current,
         vpHeightRef.current,
+        settingsRef.current.writingWindowRatio,
       ),
     [],
   );
@@ -1609,6 +1613,7 @@ export default function App() {
             cameraRef.current,
             vpWidthRef.current,
             vpHeightRef.current,
+            settingsRef.current.writingWindowRatio,
           );
           needsWindowAlignRef.current = false;
         }
@@ -1617,7 +1622,7 @@ export default function App() {
         const wp  = windowNormToWorld(point.x, point.y, win);
         cursorTargetWorldRef.current = wp;
         remotePrevNormRef.current.set(drawKey(strokeId), { x: point.x, y: point.y });
-        remoteSmoothNormRef.current.set(strokeId, { x: point.x, y: point.y });
+        remoteSmoothNormRef.current.set(strokeId, createOneEuroState({ x: point.x, y: point.y }, point.dt));
         remoteLastRawPointRef.current.set(strokeId, point);
 
         if (activeTool === 'eraser') {
@@ -1711,15 +1716,20 @@ export default function App() {
         const eraseBuf = erasingRemoteRef.current.get(strokeId);
         if (eraseBuf) {
           const win = getWritingWindow();
+          let filterState = remoteSmoothNormRef.current.get(strokeId);
           let lastWp: Point2D | null = null;
           for (const raw of points) {
-            const prevSmooth = remoteSmoothNormRef.current.get(strokeId) ?? { x: raw.x, y: raw.y };
-            const smoothed = smoothPoint(
-              prevSmooth,
+            if (!filterState) {
+              filterState = createOneEuroState({ x: raw.x, y: raw.y }, raw.dt);
+              remoteSmoothNormRef.current.set(strokeId, filterState);
+            }
+            const smoothed = filterOneEuroPoint(
+              filterState,
               { x: raw.x, y: raw.y },
+              raw.dt,
               settingsRef.current.phoneSmoothness,
+              1,
             );
-            remoteSmoothNormRef.current.set(strokeId, smoothed);
             remoteLastRawPointRef.current.set(strokeId, raw);
             const wp = windowNormToWorld(smoothed.x, smoothed.y, win);
             eraseAtPoint(wp, eraseBuf);
@@ -1739,13 +1749,18 @@ export default function App() {
         if (draft) {
           const win = getWritingWindow();
           const newest = points[points.length - 1];
-          const prevSmooth = remoteSmoothNormRef.current.get(strokeId) ?? { x: newest.x, y: newest.y };
-          const smoothed = smoothPoint(
-            prevSmooth,
+          let filterState = remoteSmoothNormRef.current.get(strokeId);
+          if (!filterState) {
+            filterState = createOneEuroState({ x: newest.x, y: newest.y }, newest.dt);
+            remoteSmoothNormRef.current.set(strokeId, filterState);
+          }
+          const smoothed = filterOneEuroPoint(
+            filterState,
             { x: newest.x, y: newest.y },
+            newest.dt,
             settingsRef.current.phoneSmoothness,
+            1,
           );
-          remoteSmoothNormRef.current.set(strokeId, smoothed);
           remoteLastRawPointRef.current.set(strokeId, newest);
           const wp = windowNormToWorld(smoothed.x, smoothed.y, win);
           remotePrevNormRef.current.set(drawKey(strokeId), { x: newest.x, y: newest.y });
@@ -1765,15 +1780,20 @@ export default function App() {
         const s = activeRemoteRef.current.get(strokeId);
         if (!s) break;
         const win = getWritingWindow();
+        let filterState = remoteSmoothNormRef.current.get(strokeId);
         let lastWp: Point2D | null = null;
         for (const raw of points) {
-          const prevSmooth = remoteSmoothNormRef.current.get(strokeId) ?? { x: raw.x, y: raw.y };
-          const smoothed = smoothPoint(
-            prevSmooth,
+          if (!filterState) {
+            filterState = createOneEuroState({ x: raw.x, y: raw.y }, raw.dt);
+            remoteSmoothNormRef.current.set(strokeId, filterState);
+          }
+          const smoothed = filterOneEuroPoint(
+            filterState,
             { x: raw.x, y: raw.y },
+            raw.dt,
             settingsRef.current.phoneSmoothness,
+            1,
           );
-          remoteSmoothNormRef.current.set(strokeId, smoothed);
           remoteLastRawPointRef.current.set(strokeId, raw);
           const wp = windowNormToWorld(smoothed.x, smoothed.y, win);
           const pt: StrokePoint = { x: wp.x, y: wp.y, p: raw.p, dt: raw.dt };
@@ -1801,6 +1821,7 @@ export default function App() {
         remotePrevNormRef.current.delete(strokeId);
         remotePrevNormRef.current.delete(drawKey(strokeId));
         const lastRaw = remoteLastRawPointRef.current.get(strokeId);
+        const filterState = remoteSmoothNormRef.current.get(strokeId);
         remoteSmoothNormRef.current.delete(strokeId);
         remoteLastRawPointRef.current.delete(strokeId);
 
@@ -1883,14 +1904,28 @@ export default function App() {
 
         if (lastRaw) {
           const win = getWritingWindow();
-          const wp = windowNormToWorld(lastRaw.x, lastRaw.y, win);
+          const endNorm = filterState
+            ? filterOneEuroPoint(
+                filterState,
+                { x: lastRaw.x, y: lastRaw.y },
+                lastRaw.dt,
+                settingsRef.current.phoneSmoothness,
+                1,
+              )
+            : { x: lastRaw.x, y: lastRaw.y };
+          const wp = windowNormToWorld(endNorm.x, endNorm.y, win);
           const last = s.points[s.points.length - 1];
           if (!last || Math.hypot(wp.x - last.x, wp.y - last.y) > 0.01) {
             const pt: StrokePoint = { x: wp.x, y: wp.y, p: lastRaw.p, dt: lastRaw.dt };
             s.points.push(pt);
-            s.bounds = appendPointToBounds(s.bounds, pt);
           }
         }
+
+        s.points = beautifyStrokePoints(s.points, {
+          smoothness: settingsRef.current.phoneSmoothness,
+          baseWidth: s.baseWidth / Math.max(0.2, cameraRef.current.zoom),
+        });
+        s.bounds = computeBounds(s.points);
 
         if (s.points.length >= 1) {
           elementsRef.current.push(s);
@@ -2599,6 +2634,11 @@ export default function App() {
 
     if (activeLocalRef.current) {
       const finalized = activeLocalRef.current;
+      finalized.points = beautifyStrokePoints(finalized.points, {
+        smoothness: settingsRef.current.phoneSmoothness,
+        baseWidth: finalized.baseWidth / Math.max(0.2, cameraRef.current.zoom),
+      });
+      finalized.bounds = computeBounds(finalized.points);
       elementsRef.current.push(finalized);
       historyRef.current.push({ type: 'add', element: finalized });
       syncHistoryFlags();

@@ -1,6 +1,7 @@
 import {
   DEFAULT_CURSOR_GLIDE_MS,
   DEFAULT_PHONE_SMOOTHNESS,
+  DEFAULT_WRITING_WINDOW_RATIO,
 } from '@scripta/shared';
 import type { AppSettings } from './settings';
 import { SettingsSvg } from './icons';
@@ -27,9 +28,18 @@ const GLIDE_PRESETS = [
   { label: 'Smooth', value: 70 },
 ];
 
+const RATIO_PRESETS = [
+  { label: 'Small', value: 0.25 },
+  { label: 'Compact', value: 0.35 },
+  { label: 'Medium', value: 0.45 },
+  { label: 'Large', value: 0.65 },
+  { label: 'Wide', value: 0.85 },
+];
+
 export function SettingsModal({ settings, onChange, onReset, onClose }: SettingsModalProps) {
   const setSmoothness = (value: number) => onChange({ ...settings, phoneSmoothness: value });
   const setGlide = (value: number) => onChange({ ...settings, cursorGlideMs: value });
+  const setRatio = (value: number) => onChange({ ...settings, writingWindowRatio: value });
 
   return (
     <div
@@ -113,6 +123,40 @@ export function SettingsModal({ settings, onChange, onReset, onClose }: Settings
               </button>
             ))}
             <span style={defaultHint}>Default {DEFAULT_CURSOR_GLIDE_MS} ms</span>
+          </div>
+        </section>
+
+        <section style={section}>
+          <div style={rowBetween}>
+            <div>
+              <div style={labelStyle}>Writing window ratio</div>
+              <div style={hintStyle}>
+                How much of the desktop screen your phone maps to. Smaller ratios let you write small text comfortably.
+              </div>
+            </div>
+            <span style={valueBadge}>{Math.round(settings.writingWindowRatio * 100)}%</span>
+          </div>
+          <input
+            type="range"
+            min={20}
+            max={90}
+            step={5}
+            value={Math.round(settings.writingWindowRatio * 100)}
+            onChange={(e) => setRatio(Number(e.target.value) / 100)}
+            style={slider}
+            aria-label="Writing window ratio"
+          />
+          <div style={presetRow}>
+            {RATIO_PRESETS.map((p) => (
+              <button
+                key={p.label}
+                onClick={() => setRatio(p.value)}
+                style={pill(Math.abs(settings.writingWindowRatio - p.value) < 0.01)}
+              >
+                {p.label}
+              </button>
+            ))}
+            <span style={defaultHint}>Default {Math.round(DEFAULT_WRITING_WINDOW_RATIO * 100)}%</span>
           </div>
         </section>
 
