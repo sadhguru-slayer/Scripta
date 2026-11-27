@@ -43,6 +43,12 @@ function getDefaultDeviceName(): string {
 const PREVIEW_HOLD_MS    = 1800;
 const PREVIEW_FADE_MS    = 1500;
 const PREVIEW_BASE_ALPHA = 0.45;
+const PALM_MAX_DIM_PX    = 45;
+
+function isPalmContact(e: React.PointerEvent): boolean {
+  if (e.pointerType !== 'touch') return false;
+  return e.width > PALM_MAX_DIM_PX || e.height > PALM_MAX_DIM_PX;
+}
 const COLORS             = ['#f8fafc', '#38bdf8', '#34d399', '#fbbf24', '#fb7185'];
 const WIDTHS             = [2, 4, 7];
 
@@ -137,6 +143,8 @@ export default function App() {
   // Pointer tracking — tablet surface + fading ink preview + multi-touch gestures
   const previewCanvasRef   = useRef<HTMLCanvasElement | null>(null);
   const activePointerIdRef = useRef<number | null>(null);
+  const activePenIdRef     = useRef<number | null>(null);
+  const lastPenUpAtRef     = useRef<number>(0);
   const padPointersRef     = useRef<Map<number, {
     startX: number; startY: number; curX: number; curY: number; downAt: number;
   }>>(new Map());
@@ -528,6 +536,16 @@ export default function App() {
     if (status !== 'connected') return;
     if (menuOpen) { setMenuOpen(false); return; }
 
+    if (isPalmContact(e)) return;
+    if (e.pointerType === 'pen') {
+      activePenIdRef.current = e.pointerId;
+    } else if (
+      e.pointerType === 'touch' &&
+      (activePenIdRef.current !== null || Date.now() - lastPenUpAtRef.current < 350)
+    ) {
+      return;
+    }
+
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
     padPointersRef.current.set(e.pointerId, {
       startX: e.clientX,
@@ -649,6 +667,11 @@ export default function App() {
   };
 
   const onPadPointerEnd = (e: React.PointerEvent<HTMLDivElement>, cancelled: boolean) => {
+    if (e.pointerId === activePenIdRef.current) {
+      activePenIdRef.current = null;
+      lastPenUpAtRef.current = Date.now();
+    }
+    if (!padPointersRef.current.has(e.pointerId)) return;
     padPointersRef.current.delete(e.pointerId);
     const tf = twoFingerRef.current;
     if (tf) {
