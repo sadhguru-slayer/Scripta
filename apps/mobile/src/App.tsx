@@ -538,6 +538,9 @@ export default function App() {
     });
 
     if (padPointersRef.current.size === 1 && !twoFingerRef.current) {
+      if (activePointerIdRef.current !== null) {
+        finishPadPointer(true);
+      }
       startStrokeForPointer(e.pointerId, e.clientX, e.clientY, e.pressure);
       return;
     }
@@ -897,6 +900,7 @@ export default function App() {
         onPointerMove={onPadPointerMove}
         onPointerUp={(e) => onPadPointerEnd(e, false)}
         onPointerCancel={(e) => onPadPointerEnd(e, true)}
+        onLostPointerCapture={(e) => onPadPointerEnd(e, true)}
         style={{
           position: 'relative',
           width: '100%', height: '100%', touchAction: 'none',

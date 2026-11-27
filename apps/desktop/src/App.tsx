@@ -830,10 +830,13 @@ export default function App() {
         }
       }
 
-      // Scroll & extend line during phone drawing only when stylus/finger is near the phone pad's edges
+      // Scroll & extend line during phone drawing only when stylus/finger is deliberately held
+      // against the very edge of the phone pad (<= 2.5% from edge, after >= 220ms of drawing).
       if (hasActiveRemoteDraw) {
-        const phoneEdge = 0.06;
-        for (const strokeId of activeRemoteRef.current.keys()) {
+        const phoneEdge = 0.025;
+        for (const [strokeId, s] of activeRemoteRef.current.entries()) {
+          const lastPt = s.points[s.points.length - 1];
+          if (!lastPt || s.points.length < 2 || lastPt.dt < 220) continue;
           const raw = remoteLastRawPointRef.current.get(strokeId);
           if (!raw) continue;
           if (raw.x < phoneEdge) {
