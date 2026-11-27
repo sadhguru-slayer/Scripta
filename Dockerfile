@@ -15,7 +15,7 @@ COPY apps/mobile apps/mobile
 RUN pnpm build
 
 # Stage 2: Build Go backend
-FROM golang:1.24-alpine AS backend
+FROM golang:1.26-alpine AS backend
 WORKDIR /src
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
