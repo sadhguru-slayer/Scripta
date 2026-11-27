@@ -1243,7 +1243,7 @@ export default function App() {
   }, [scheduleRender, scheduleSave]);
 
   const togglePaperTheme = useCallback(() => {
-    const nextTheme = settingsRef.current.paperTheme === 'light' ? 'dark' : 'light';
+    const nextTheme = (settingsRef.current.paperTheme === 'light' ? 'dark' : 'light') as 'dark' | 'light';
     const nextSettings = { ...settingsRef.current, paperTheme: nextTheme };
     settingsRef.current = nextSettings;
     setSettings(nextSettings);
