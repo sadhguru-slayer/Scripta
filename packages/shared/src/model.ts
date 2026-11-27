@@ -44,6 +44,7 @@ export interface Stroke {
   points: StrokePoint[];
   bounds: Bounds;
   createdAt: number;
+  deviceId?: string;
 }
 
 export interface ShapeElement {
@@ -61,6 +62,7 @@ export interface ShapeElement {
   label?: string;
   bounds: Bounds;
   createdAt: number;
+  deviceId?: string;
 }
 
 export interface ElementBinding {
@@ -83,6 +85,7 @@ export interface ConnectorElement {
   label?: string;
   bounds: Bounds;
   createdAt: number;
+  deviceId?: string;
 }
 
 export type BoardElement = Stroke | ShapeElement | ConnectorElement;

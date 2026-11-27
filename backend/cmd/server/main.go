@@ -14,6 +14,7 @@ import (
 
 	"scripta/backend/internal/api"
 	"scripta/backend/internal/hub"
+	"scripta/backend/internal/store"
 )
 
 func main() {
@@ -28,8 +29,19 @@ func main() {
 		}
 	}
 
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = filepath.Join("data", "scripta.db")
+	}
+	st, err := store.Open(dbPath)
+	if err != nil {
+		log.Error("failed to open sqlite store", "path", dbPath, "err", err)
+		os.Exit(1)
+	}
+	defer st.Close()
+
 	h := hub.New(log)
-	apiHandler := api.NewServer(h, log)
+	apiHandler := api.NewServer(h, st, log)
 	handler := withStaticApps(apiHandler, os.Getenv("STATIC_DIR"), log)
 
 	srv := &http.Server{

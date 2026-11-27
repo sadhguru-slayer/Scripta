@@ -36,12 +36,21 @@ const (
 	RoleMobile  Role = "mobile"
 )
 
+type ConnectedDevice struct {
+	DeviceID    string `json:"deviceId"`
+	Name        string `json:"name"`
+	ConnectedAt int64  `json:"connectedAt"`
+}
+
 type Client struct {
-	role Role
-	conn *websocket.Conn
-	send chan []byte
-	done chan struct{}
-	once sync.Once
+	role        Role
+	deviceID    string
+	deviceName  string
+	connectedAt int64
+	conn        *websocket.Conn
+	send        chan []byte
+	done        chan struct{}
+	once        sync.Once
 }
 
 func (c *Client) close() {
@@ -72,13 +81,15 @@ type Session struct {
 	CodeExpires time.Time
 	CodeClaimed bool
 
-	HostToken   string
-	MobileToken string
+	HostToken       string
+	MobileToken     string
+	QrSecret        string
 
-	mu          sync.Mutex
-	desktop     *Client
-	mobile      *Client
-	aspectRatio float64
+	mu              sync.Mutex
+	desktop         *Client
+	mobile          *Client
+	aspectRatio     float64
+	pendingApproval bool
 }
 
 type Hub struct {
@@ -100,6 +111,7 @@ type CreateResult struct {
 	SessionID string    `json:"sessionId"`
 	PairCode  string    `json:"pairCode"`
 	HostToken string    `json:"hostToken"`
+	QrSecret  string    `json:"qrSecret"`
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
@@ -109,6 +121,10 @@ func (h *Hub) CreateSession() (CreateResult, error) {
 		return CreateResult{}, err
 	}
 	hostToken, err := randomHex(32)
+	if err != nil {
+		return CreateResult{}, err
+	}
+	qrSecret, err := randomHex(16)
 	if err != nil {
 		return CreateResult{}, err
 	}
@@ -123,6 +139,7 @@ func (h *Hub) CreateSession() (CreateResult, error) {
 		PairCode:    code,
 		CodeExpires: expires,
 		HostToken:   hostToken,
+		QrSecret:    qrSecret,
 	}
 
 	h.mu.Lock()
@@ -143,16 +160,26 @@ func (h *Hub) CreateSession() (CreateResult, error) {
 		SessionID: sessionID,
 		PairCode:  code,
 		HostToken: hostToken,
+		QrSecret:  qrSecret,
 		ExpiresAt: expires,
 	}, nil
 }
 
 type JoinResult struct {
-	SessionID   string `json:"sessionId"`
-	MobileToken string `json:"mobileToken"`
+	SessionID       string `json:"sessionId"`
+	MobileToken     string `json:"mobileToken"`
+	PendingApproval bool   `json:"pendingApproval"`
 }
 
 func (h *Hub) JoinSession(pairCode string, aspectRatio float64) (JoinResult, error) {
+	return h.joinSession(pairCode, aspectRatio, false, "")
+}
+
+func (h *Hub) JoinSessionWithSecret(pairCode string, aspectRatio float64, qrSecret string) (JoinResult, error) {
+	return h.joinSession(pairCode, aspectRatio, true, qrSecret)
+}
+
+func (h *Hub) joinSession(pairCode string, aspectRatio float64, checkSecret bool, qrSecret string) (JoinResult, error) {
 	h.mu.RLock()
 	sessionID, ok := h.byCode[pairCode]
 	sess := h.sessions[sessionID]
@@ -181,16 +208,27 @@ func (h *Hub) JoinSession(pairCode string, aspectRatio float64) (JoinResult, err
 	if aspectRatio > 0.1 {
 		sess.aspectRatio = aspectRatio
 	}
+	needsApproval := false
+	if checkSecret {
+		needsApproval = qrSecret == "" || subtle.ConstantTimeCompare([]byte(qrSecret), []byte(sess.QrSecret)) != 1
+	}
+	sess.pendingApproval = needsApproval
 	sess.mu.Unlock()
 
 	return JoinResult{
-		SessionID:   sess.ID,
-		MobileToken: mobileToken,
+		SessionID:       sess.ID,
+		MobileToken:     mobileToken,
+		PendingApproval: needsApproval,
 	}, nil
 }
 
 // ServeWS authenticates the client, attaches it to the session, and blocks until the connection closes.
 func (h *Hub) ServeWS(ctx context.Context, sessionID string, role Role, token string, conn *websocket.Conn) error {
+	return h.ServeWSWithDevice(ctx, sessionID, role, token, "", "", conn)
+}
+
+// ServeWSWithDevice authenticates the client with optional device metadata and blocks until closed.
+func (h *Hub) ServeWSWithDevice(ctx context.Context, sessionID string, role Role, token, deviceID, deviceName string, conn *websocket.Conn) error {
 	h.mu.RLock()
 	sess := h.sessions[sessionID]
 	h.mu.RUnlock()
@@ -215,27 +253,44 @@ func (h *Hub) ServeWS(ctx context.Context, sessionID string, role Role, token st
 		return ErrUnauthorized
 	}
 
+	if role == RoleMobile {
+		if deviceID == "" {
+			deviceID = "phone-1"
+		}
+		if deviceName == "" {
+			deviceName = "Phone"
+		}
+	}
+
 	client := &Client{
-		role: role,
-		conn: conn,
-		send: make(chan []byte, sendBufferSize),
-		done: make(chan struct{}),
+		role:        role,
+		deviceID:    deviceID,
+		deviceName:  deviceName,
+		connectedAt: time.Now().UnixMilli(),
+		conn:        conn,
+		send:        make(chan []byte, sendBufferSize),
+		done:        make(chan struct{}),
 	}
 
 	var oldClient *Client
 	var peer *Client
+	var desktopClient *Client
 	var aspect float64
 	if role == RoleDesktop {
 		oldClient = sess.desktop
 		sess.desktop = client
+		desktopClient = client
 		peer = sess.mobile
 		aspect = sess.aspectRatio
 	} else {
 		oldClient = sess.mobile
 		sess.mobile = client
 		peer = sess.desktop
+		desktopClient = sess.desktop
 		aspect = sess.aspectRatio
 	}
+	devices := connectedDevicesLocked(sess)
+	pendingApproval := sess.pendingApproval
 	sess.mu.Unlock()
 
 	if oldClient != nil {
@@ -247,14 +302,33 @@ func (h *Hub) ServeWS(ctx context.Context, sessionID string, role Role, token st
 	// Send session.ready to this client
 	h.enqueueControl(client, "session.ready", map[string]any{"role": role})
 
-	// Notify both peers if both are present
-	if peer != nil {
+	if pendingApproval {
 		if role == RoleMobile {
-			h.enqueueControl(peer, "peer.connected", map[string]any{"role": RoleMobile, "aspectRatio": aspect})
-			h.enqueueControl(client, "peer.connected", map[string]any{"role": RoleDesktop})
-		} else {
-			h.enqueueControl(peer, "peer.connected", map[string]any{"role": RoleDesktop})
-			h.enqueueControl(client, "peer.connected", map[string]any{"role": RoleMobile, "aspectRatio": aspect})
+			h.enqueueControl(client, "session.pending", map[string]any{"deviceId": deviceID, "deviceName": deviceName})
+			if desktopClient != nil {
+				h.enqueueControl(desktopClient, "session.pending", map[string]any{"deviceId": deviceID, "deviceName": deviceName})
+			}
+		} else if peer != nil {
+			h.enqueueControl(client, "session.pending", map[string]any{"deviceId": peer.deviceID, "deviceName": peer.deviceName})
+		}
+	} else {
+		if desktopClient != nil {
+			h.enqueueControl(desktopClient, "session.devices", map[string]any{"devices": devices})
+		}
+
+		// Notify both peers if both are present
+		if peer != nil {
+			if role == RoleMobile {
+				h.enqueueControl(peer, "peer.connected", map[string]any{
+					"role": RoleMobile, "aspectRatio": aspect, "deviceId": deviceID, "deviceName": deviceName,
+				})
+				h.enqueueControl(client, "peer.connected", map[string]any{"role": RoleDesktop})
+			} else {
+				h.enqueueControl(peer, "peer.connected", map[string]any{"role": RoleDesktop})
+				h.enqueueControl(client, "peer.connected", map[string]any{
+					"role": RoleMobile, "aspectRatio": aspect, "deviceId": peer.deviceID, "deviceName": peer.deviceName,
+				})
+			}
 		}
 	}
 
@@ -275,12 +349,105 @@ func (h *Hub) ServeWS(ctx context.Context, sessionID string, role Role, token st
 		sess.mobile = nil
 		remainingPeer = sess.desktop
 	}
+	devicesAfter := connectedDevicesLocked(sess)
+	desktopAfter := sess.desktop
 	sess.mu.Unlock()
 
 	if remainingPeer != nil {
-		h.enqueueControl(remainingPeer, "peer.disconnected", map[string]any{"role": role})
+		h.enqueueControl(remainingPeer, "peer.disconnected", map[string]any{"role": role, "deviceId": deviceID})
+	}
+	if desktopAfter != nil {
+		h.enqueueControl(desktopAfter, "session.devices", map[string]any{"devices": devicesAfter})
 	}
 	return nil
+}
+
+// ApproveDevice approves or denies a pending mobile connection.
+func (h *Hub) ApproveDevice(sessionID, deviceID string, allow bool) bool {
+	h.mu.RLock()
+	sess := h.sessions[sessionID]
+	h.mu.RUnlock()
+	if sess == nil {
+		return false
+	}
+
+	sess.mu.Lock()
+	m := sess.mobile
+	d := sess.desktop
+	if m == nil || (deviceID != "" && m.deviceID != deviceID) {
+		sess.mu.Unlock()
+		return false
+	}
+	if !allow {
+		sess.mobile = nil
+		sess.MobileToken = ""
+		sess.pendingApproval = false
+		sess.mu.Unlock()
+		h.enqueueControl(m, "session.denied", map[string]any{"reason": "Connection denied by desktop"})
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			m.close()
+		}()
+		return true
+	}
+
+	sess.pendingApproval = false
+	aspect := sess.aspectRatio
+	devices := connectedDevicesLocked(sess)
+	sess.mu.Unlock()
+
+	h.enqueueControl(m, "session.approved", map[string]any{"deviceId": m.deviceID})
+	if d != nil {
+		h.enqueueControl(d, "session.devices", map[string]any{"devices": devices})
+		h.enqueueControl(d, "peer.connected", map[string]any{
+			"role": RoleMobile, "aspectRatio": aspect, "deviceId": m.deviceID, "deviceName": m.deviceName,
+		})
+		h.enqueueControl(m, "peer.connected", map[string]any{"role": RoleDesktop})
+	}
+	return true
+}
+
+// KickDevice disconnects a mobile device from the session by deviceId.
+func (h *Hub) KickDevice(sessionID, deviceID string) bool {
+	h.mu.RLock()
+	sess := h.sessions[sessionID]
+	h.mu.RUnlock()
+	if sess == nil {
+		return false
+	}
+
+	sess.mu.Lock()
+	m := sess.mobile
+	if m == nil || (deviceID != "" && m.deviceID != deviceID) {
+		sess.mu.Unlock()
+		return false
+	}
+	sess.mobile = nil
+	desktop := sess.desktop
+	devices := connectedDevicesLocked(sess)
+	sess.mu.Unlock()
+
+	h.enqueueControl(m, "session.kicked", map[string]any{"reason": "Disconnected by desktop"})
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		m.close()
+	}()
+	if desktop != nil {
+		h.enqueueControl(desktop, "peer.disconnected", map[string]any{"role": RoleMobile, "deviceId": m.deviceID})
+		h.enqueueControl(desktop, "session.devices", map[string]any{"devices": devices})
+	}
+	return true
+}
+
+func connectedDevicesLocked(sess *Session) []ConnectedDevice {
+	if sess.mobile == nil {
+		return []ConnectedDevice{}
+	}
+	return []ConnectedDevice{{
+		DeviceID:    sess.mobile.deviceID,
+		Name:        sess.mobile.deviceName,
+		ConnectedAt: sess.mobile.connectedAt,
+	}}
 }
 
 func (h *Hub) readPump(ctx context.Context, sess *Session, client *Client) {
@@ -294,6 +461,10 @@ func (h *Hub) readPump(ctx context.Context, sess *Session, client *Client) {
 		}
 
 		sess.mu.Lock()
+		if client.role == RoleMobile && sess.pendingApproval {
+			sess.mu.Unlock()
+			continue
+		}
 		var target *Client
 		if client.role == RoleDesktop {
 			target = sess.mobile

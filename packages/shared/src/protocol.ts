@@ -2,6 +2,12 @@ import type { StrokePoint, ToolType } from './model';
 
 export type ClientRole = 'desktop' | 'mobile';
 
+export interface ConnectedDevice {
+  deviceId: string;
+  name: string;
+  connectedAt: number;
+}
+
 export interface WsEnvelope<T extends string = string, P = unknown> {
   v: 1;
   type: T;
@@ -12,8 +18,13 @@ export interface WsEnvelope<T extends string = string, P = unknown> {
 
 export type ServerMessage =
   | WsEnvelope<'session.ready', { role: ClientRole }>
-  | WsEnvelope<'peer.connected', { role: ClientRole; aspectRatio?: number }>
-  | WsEnvelope<'peer.disconnected', { role: ClientRole }>
+  | WsEnvelope<'peer.connected', { role: ClientRole; aspectRatio?: number; deviceId?: string; deviceName?: string }>
+  | WsEnvelope<'peer.disconnected', { role: ClientRole; deviceId?: string }>
+  | WsEnvelope<'session.devices', { devices: ConnectedDevice[] }>
+  | WsEnvelope<'session.pending', { deviceId: string; deviceName: string }>
+  | WsEnvelope<'session.approved', { deviceId: string }>
+  | WsEnvelope<'session.denied', { reason: string }>
+  | WsEnvelope<'session.kicked', { reason: string }>
   | WsEnvelope<'error', { code: string; message: string }>;
 
 export type MobileToDesktopMessage =
@@ -21,6 +32,7 @@ export type MobileToDesktopMessage =
       'stroke.start',
       {
         strokeId: string;
+        deviceId?: string;
         tool: ToolType;
         color: string;
         width: number;

@@ -32,6 +32,7 @@ import {
   type BackgroundType,
   type BoardElement,
   type Camera,
+  type ConnectedDevice,
   type ConnectorElement,
   type ConnectorRouting,
   type ElementBinding,
@@ -65,6 +66,7 @@ import {
 } from './icons';
 import { TutorialModal } from './TutorialModal';
 import { LandingPage } from './LandingPage';
+import { NotesView } from './NotesView';
 import { SettingsModal } from './SettingsModal';
 import { HelpModal } from './HelpModal';
 import { assetUrl } from './assets';
@@ -274,6 +276,27 @@ export default function App() {
   const [modHeld,        setModHeld]        = useState(false);
   const [spaceHeld,      setSpaceHeld]      = useState(false);
   const [phoneConnected, setPhoneConnected] = useState(false);
+  const [connectedDevices, setConnectedDevices] = useState<ConnectedDevice[]>([]);
+  const [pendingDevice, setPendingDevice] = useState<{ deviceId: string; deviceName: string } | null>(null);
+  const [showDevicesMenu,  setShowDevicesMenu]  = useState(false);
+  const [route, setRoute] = useState<'/' | '/notes' | '/draw'>(() => {
+    if (typeof window === 'undefined') return '/draw';
+    const p = window.location.pathname;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('tour') === '1' || params.get('welcome') === '1') return '/';
+    if (p.startsWith('/draw')) return '/draw';
+    if (p.startsWith('/notes')) return '/notes';
+    try {
+      if (window.localStorage.getItem(LANDING_KEY) === 'seen') return '/notes';
+    } catch { /* ignore */ }
+    return '/';
+  });
+  const [activePageId, setActivePageId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return new URLSearchParams(window.location.search).get('page');
+  });
+  const activePageIdRef = useRef<string | null>(activePageId);
+  activePageIdRef.current = activePageId;
   const [showQrModal,    setShowQrModal]    = useState(false);
   const [pairing,        setPairing]        = useState<PairingState | null>(null);
   const [pairError,      setPairError]      = useState<string | null>(null);
@@ -339,6 +362,18 @@ export default function App() {
     }
     saveTimerRef.current = window.setTimeout(() => {
       saveTimerRef.current = null;
+      const pageId = activePageIdRef.current;
+      if (pageId) {
+        void fetch(`/api/pages/${pageId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            bgType: bgTypeRef.current,
+            camera: cameraRef.current,
+            elements: elementsRef.current,
+          }),
+        }).catch(() => { /* fallback to localStorage below */ });
+      }
       try {
         localStorage.setItem(
           STORAGE_KEY,
@@ -353,6 +388,41 @@ export default function App() {
         // Ignore quota / privacy-mode storage errors
       }
     }, 1500);
+  }, []);
+
+  const navigateTo = useCallback((nextRoute: '/' | '/notes' | '/draw', pageId?: string | null) => {
+    const url = nextRoute === '/draw' && pageId
+      ? `/draw?page=${encodeURIComponent(pageId)}`
+      : nextRoute;
+    try {
+      window.history.pushState({}, '', url);
+    } catch { /* ignore */ }
+    setRoute(nextRoute);
+    if (nextRoute === '/draw' && pageId !== undefined) {
+      setActivePageId(pageId);
+      activePageIdRef.current = pageId;
+    }
+    setShowLanding(nextRoute === '/');
+  }, []);
+
+  useEffect(() => {
+    const onPop = () => {
+      const p = window.location.pathname;
+      const pg = new URLSearchParams(window.location.search).get('page');
+      if (p.startsWith('/draw')) {
+        setRoute('/draw');
+        setActivePageId(pg);
+        setShowLanding(false);
+      } else if (p.startsWith('/notes')) {
+        setRoute('/notes');
+        setShowLanding(false);
+      } else {
+        setRoute('/');
+        setShowLanding(true);
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
   }, []);
 
   const getWritingWindow = useCallback(
@@ -863,6 +933,61 @@ export default function App() {
     setSelectedId(id);
     scheduleRender({ active: true });
   }, [scheduleRender]);
+
+  // Load page from SQLite when entering /draw
+  useEffect(() => {
+    if (route !== '/draw') return;
+    let cancelled = false;
+    const load = async () => {
+      let targetPageId = activePageIdRef.current;
+      if (!targetPageId) {
+        try {
+          const res = await fetch('/api/notebooks');
+          if (res.ok) {
+            const data = await res.json();
+            const firstPage = data.notebooks?.[0]?.pages?.[0];
+            if (firstPage?.id) {
+              targetPageId = firstPage.id;
+              if (!cancelled) {
+                setActivePageId(firstPage.id);
+                activePageIdRef.current = firstPage.id;
+                try {
+                  window.history.replaceState({}, '', `/draw?page=${encodeURIComponent(firstPage.id)}`);
+                } catch { /* ignore */ }
+              }
+            }
+          }
+        } catch { /* ignore */ }
+      }
+      if (!targetPageId || cancelled) return;
+      try {
+        const res = await fetch(`/api/pages/${targetPageId}`);
+        if (!res.ok || cancelled) return;
+        const pg = await res.json();
+        elementsRef.current = Array.isArray(pg.elements) ? pg.elements : [];
+        if (pg.camera && typeof pg.camera.x === 'number') {
+          cameraRef.current = pg.camera;
+          const pct = Math.round(pg.camera.zoom * 100);
+          lastZoomPctRef.current = pct;
+          setZoomPct(pct);
+        } else {
+          cameraRef.current = { x: 0, y: 0, zoom: 1 };
+          lastZoomPctRef.current = 100;
+          setZoomPct(100);
+        }
+        if (pg.bgType === 'dots' || pg.bgType === 'grid' || pg.bgType === 'plain') {
+          bgTypeRef.current = pg.bgType;
+          setBgType(pg.bgType);
+        }
+        historyRef.current = new CommandHistory();
+        syncHistoryFlags();
+        selectElement(null);
+        scheduleRender({ static: true, active: true });
+      } catch { /* ignore */ }
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [route, activePageId, scheduleRender, syncHistoryFlags, selectElement]);
 
   const undo = useCallback(() => {
     if (!historyRef.current.undo(elementsRef.current)) return;
@@ -1413,8 +1538,17 @@ export default function App() {
   // ── WebSocket message handler ─────────────────────────────────────────────
   const handleWsMessage = useCallback((msg: ScriptaWsMessage) => {
     switch (msg.type) {
+      case 'session.pending':
+        setPendingDevice(msg.payload);
+        break;
+
+      case 'session.devices':
+        setConnectedDevices(msg.payload.devices || []);
+        break;
+
       case 'peer.connected':
         if (msg.payload.role === 'mobile') {
+          setPendingDevice(null);
           if (msg.payload.aspectRatio) phoneAspectRef.current = msg.payload.aspectRatio;
           phoneConnectedRef.current = true;
           setPhoneConnected(true);
@@ -1453,7 +1587,7 @@ export default function App() {
         break;
 
       case 'stroke.start': {
-        const { strokeId, tool: rawTool, color: c, width: bw, point } = msg.payload;
+        const { strokeId, deviceId, tool: rawTool, color: c, width: bw, point } = msg.payload;
 
         if (modHeldRef.current || toolRef.current === 'select') {
           remotePrevNormRef.current.set(strokeId, { x: point.x, y: point.y });
@@ -1539,6 +1673,7 @@ export default function App() {
           points: [pt],
           bounds: computeBounds([pt]),
           createdAt: msg.ts,
+          deviceId,
         });
         const panned = autoPanToWorldPoint(wp);
         scheduleRender({ static: panned, active: true });
@@ -1848,7 +1983,7 @@ export default function App() {
         (import.meta.env.PROD
           ? `${window.location.origin}/m`
           : `${window.location.protocol}//${netData.lanIp}:5174`);
-      const mobileUrl = `${mobileOrigin}/?code=${pairData.pairCode}`;
+      const mobileUrl = `${mobileOrigin}/?code=${pairData.pairCode}&qr=${encodeURIComponent(pairData.qrSecret || '')}`;
       const qrDataUrl = await QRCode.toDataURL(mobileUrl, {
         width: 240, margin: 2,
         color: { dark: '#0f172a', light: '#f8fafc' },
@@ -1893,13 +2028,48 @@ export default function App() {
 
     if (action === 'tour') {
       suppressTutorialRef.current = true;
+      setShowLanding(false);
+      navigateTo('/draw');
       setShowTutorial(true);
-    } else if (action === 'connect') {
+      return;
+    }
+    if (action === 'connect') {
       suppressTutorialRef.current = true;
+      setShowLanding(false);
+      navigateTo('/draw');
       void startPairing();
+      return;
+    }
+    if (action === 'skip') {
+      setShowLanding(false);
+      navigateTo('/notes');
+      return;
     }
     setShowLanding(false);
-  }, [startPairing]);
+    navigateTo('/draw');
+  }, [startPairing, navigateTo]);
+
+  const kickDevice = useCallback(async (deviceId: string) => {
+    if (!pairing?.sessionId) return;
+    try {
+      await fetch(`/api/sessions/${pairing.sessionId}/devices/${encodeURIComponent(deviceId)}/kick`, {
+        method: 'POST',
+      });
+    } catch { /* ignore */ }
+  }, [pairing?.sessionId]);
+
+  const respondApproval = useCallback(async (allow: boolean) => {
+    if (!pairing?.sessionId || !pendingDevice) return;
+    const devId = pendingDevice.deviceId;
+    setPendingDevice(null);
+    try {
+      await fetch(`/api/sessions/${pairing.sessionId}/devices/${encodeURIComponent(devId)}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ allow }),
+      });
+    } catch { /* ignore */ }
+  }, [pairing?.sessionId, pendingDevice]);
 
   const handleTutorialClose = useCallback(() => {
     setShowTutorial(false);
@@ -2541,6 +2711,25 @@ export default function App() {
         scrollbarWidth: 'none',
       }}>
         <button
+          onClick={() => navigateTo('/notes')}
+          title="Back to Notebooks & Pages"
+          style={{
+            height: 28,
+            padding: '0 8px',
+            borderRadius: 7,
+            background: '#1e293b',
+            border: '1px solid #334155',
+            color: '#cbd5e1',
+            fontSize: 11.5,
+            fontWeight: 500,
+            cursor: 'pointer',
+            flexShrink: 0,
+          }}
+        >
+          ← Notes
+        </button>
+
+        <button
           onClick={openWelcome}
           title="Home / Welcome"
           aria-label="Open welcome page"
@@ -2660,8 +2849,11 @@ export default function App() {
         <Divider />
 
         <button
-          onClick={startPairing}
-          title={phoneConnected ? 'Phone connected (click for QR/code)' : 'Connect phone as wireless tablet'}
+          onClick={() => {
+            if (phoneConnected) setShowDevicesMenu((v) => !v);
+            else void startPairing();
+          }}
+          title={phoneConnected ? 'Connected devices & pairing' : 'Connect phone as wireless tablet'}
           style={{
             height: 32,
             width: 112,
@@ -2691,6 +2883,90 @@ export default function App() {
           <span>{phoneConnected ? (modHeld ? 'Moving' : 'Connected') : 'Connect'}</span>
         </button>
       </div>
+
+      {/* ── Connected Devices Popover ── */}
+      {showDevicesMenu && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 62,
+            right: 20,
+            width: 240,
+            background: 'rgba(15,23,42,0.96)',
+            border: '1px solid #334155',
+            borderRadius: 12,
+            padding: 12,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+            boxShadow: '0 12px 32px rgba(0,0,0,0.45)',
+            zIndex: 50,
+            color: '#f8fafc',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: '#cbd5e1' }}>Connected Devices</span>
+            <button
+              onClick={() => setShowDevicesMenu(false)}
+              style={{ background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: 14 }}
+            >
+              ×
+            </button>
+          </div>
+          {connectedDevices.length === 0 ? (
+            <span style={{ fontSize: 12, color: '#64748b' }}>No phones connected</span>
+          ) : (
+            connectedDevices.map((dev) => (
+              <div
+                key={dev.deviceId}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '6px 8px',
+                  borderRadius: 8,
+                  background: '#1e293b',
+                  fontSize: 12,
+                }}
+              >
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#34d399' }} />
+                  {dev.name}
+                </span>
+                <button
+                  onClick={() => kickDevice(dev.deviceId)}
+                  style={{
+                    background: 'rgba(251,113,133,0.14)',
+                    color: '#fda4af',
+                    border: '1px solid rgba(251,113,133,0.35)',
+                    borderRadius: 6,
+                    padding: '2px 7px',
+                    fontSize: 11,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Disconnect
+                </button>
+              </div>
+            ))
+          )}
+          <button
+            onClick={() => { setShowDevicesMenu(false); void startPairing(); }}
+            style={{
+              background: '#0284c7',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 8,
+              padding: '6px 10px',
+              fontSize: 12,
+              fontWeight: 500,
+              cursor: 'pointer',
+            }}
+          >
+            Show QR / Pair Code
+          </button>
+        </div>
+      )}
 
       {/* ── Contextual Properties Sub-bar (Shapes / Connectors / Selection) ── */}
       {(showConnectorOptions || showShapeOptions || selectedEl) && (
@@ -2857,6 +3133,51 @@ export default function App() {
             </>)}
             <button onClick={() => setShowQrModal(false)} style={pillBtnStyle(false)}>Close</button>
           </div>
+        </div>
+      )}
+
+      {/* ── Pending Device Approval Prompt ── */}
+      {pendingDevice && (
+        <div style={{
+          position: 'fixed', top: 68, right: 20, zIndex: 65,
+          background: 'rgba(15,23,42,0.98)', border: '1px solid #38bdf8',
+          borderRadius: 12, padding: '12px 14px', width: 270,
+          boxShadow: '0 12px 32px rgba(0,0,0,0.55)', color: '#f8fafc',
+          display: 'flex', flexDirection: 'column', gap: 10,
+        }}>
+          <div style={{ fontSize: 13, lineHeight: 1.4 }}>
+            <strong>{pendingDevice.deviceName}</strong> wants to connect to this board.
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button
+              onClick={() => void respondApproval(false)}
+              style={{
+                background: '#1e293b', color: '#fda4af', border: '1px solid rgba(251,113,133,0.4)',
+                borderRadius: 8, padding: '6px 12px', fontSize: 12, cursor: 'pointer',
+              }}
+            >
+              Deny
+            </button>
+            <button
+              onClick={() => void respondApproval(true)}
+              style={{
+                background: '#0284c7', color: '#fff', border: '1px solid #38bdf8',
+                borderRadius: 8, padding: '6px 14px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              }}
+            >
+              Allow
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Notes Browser Route (/notes) ── */}
+      {route === '/notes' && !showLanding && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 70, overflowY: 'auto' }}>
+          <NotesView
+            onOpenPage={(pageId) => navigateTo('/draw', pageId)}
+            onOpenLanding={() => navigateTo('/')}
+          />
         </div>
       )}
 

@@ -8,7 +8,34 @@ import {
   type ToolType,
 } from '@scripta/shared';
 
-type ConnStatus = 'unpaired' | 'connecting' | 'connected' | 'reconnecting' | 'error';
+type ConnStatus = 'unpaired' | 'connecting' | 'waiting_approval' | 'connected' | 'reconnecting' | 'disconnected' | 'error';
+
+const DEVICE_ID_KEY   = 'scripta:mobile:deviceId';
+const DEVICE_NAME_KEY = 'scripta:mobile:deviceName';
+
+function getOrCreateDeviceId(): string {
+  try {
+    const existing = window.localStorage.getItem(DEVICE_ID_KEY);
+    if (existing) return existing;
+    const id = `dev_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
+    window.localStorage.setItem(DEVICE_ID_KEY, id);
+    return id;
+  } catch {
+    return `dev_${Math.random().toString(36).slice(2, 10)}`;
+  }
+}
+
+function getDefaultDeviceName(): string {
+  try {
+    const saved = window.localStorage.getItem(DEVICE_NAME_KEY);
+    if (saved) return saved;
+  } catch { /* ignore */ }
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+  if (/iPhone/i.test(ua)) return 'iPhone';
+  if (/iPad/i.test(ua)) return 'iPad';
+  if (/Android/i.test(ua)) return 'Android Phone';
+  return 'Phone';
+}
 
 const PREVIEW_HOLD_MS    = 750;
 const PREVIEW_FADE_MS    = 1000;
@@ -66,6 +93,11 @@ export default function App() {
     const p = new URLSearchParams(window.location.search);
     return (p.get('code') || '').toUpperCase();
   });
+  const [deviceName, setDeviceName] = useState<string>(() => getDefaultDeviceName());
+  const deviceIdRef   = useRef<string>(getOrCreateDeviceId());
+  const deviceNameRef = useRef<string>(deviceName);
+  deviceNameRef.current = deviceName;
+  const manualDisconnectRef = useRef(false);
   const [status,         setStatus]         = useState<ConnStatus>('unpaired');
   const [errorMsg,       setErrorMsg]       = useState<string | null>(null);
   const [menuOpen,       setMenuOpen]       = useState(false);
@@ -237,11 +269,17 @@ export default function App() {
 
   // ── WebSocket connect / reconnect ─────────────────────────────────────────
   const connectWS = useCallback((sessionId: string, mobileToken: string) => {
+    manualDisconnectRef.current = false;
     setStatus(reconnectRef.current > 0 ? 'reconnecting' : 'connecting');
     const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(
-      `${wsProto}//${window.location.host}/ws?sessionId=${sessionId}&role=mobile&token=${mobileToken}`
-    );
+    const params = new URLSearchParams({
+      sessionId,
+      role: 'mobile',
+      token: mobileToken,
+      deviceId: deviceIdRef.current,
+      deviceName: deviceNameRef.current || 'Phone',
+    });
+    const ws = new WebSocket(`${wsProto}//${window.location.host}/ws?${params.toString()}`);
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -265,18 +303,61 @@ export default function App() {
           schedulePreviewRender();
         }
       }
+      if (msg.type === 'session.pending') {
+        setStatus('waiting_approval');
+      }
+      if (msg.type === 'session.approved') {
+        setStatus('connected');
+        const { w, h } = vpSizeRef.current;
+        const rotated = isSoftwareRotated(horizontalModeRef.current, w, h);
+        sendMsg('pad.resize', { aspectRatio: getTabletAspect(w, h, rotated) });
+      }
+      if (msg.type === 'session.denied') {
+        manualDisconnectRef.current = true;
+        credsRef.current = null;
+        setErrorMsg(msg.payload.reason || 'Connection denied by desktop');
+        setStatus('unpaired');
+      }
+      if (msg.type === 'session.kicked') {
+        manualDisconnectRef.current = true;
+        credsRef.current = null;
+        setErrorMsg(msg.payload.reason || 'Disconnected by desktop');
+        setStatus('unpaired');
+      }
     };
 
     ws.onclose = () => {
-      if (!credsRef.current) return;
+      if (manualDisconnectRef.current || !credsRef.current) return;
       setStatus('reconnecting');
       const delay = Math.min(10_000, 500 * 2 ** reconnectRef.current);
       reconnectRef.current += 1;
       window.setTimeout(() => {
-        if (credsRef.current) connectWS(credsRef.current.sessionId, credsRef.current.mobileToken);
+        if (!manualDisconnectRef.current && credsRef.current) {
+          connectWS(credsRef.current.sessionId, credsRef.current.mobileToken);
+        }
       }, delay);
     };
   }, [sendMsg, schedulePreviewRender]);
+
+  const disconnectPhone = useCallback(() => {
+    manualDisconnectRef.current = true;
+    setMenuOpen(false);
+    const ws = wsRef.current;
+    wsRef.current = null;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.close(1000, 'user_disconnect');
+    }
+    setStatus('disconnected');
+  }, []);
+
+  const reconnectPhone = useCallback(() => {
+    if (!credsRef.current) {
+      setStatus('unpaired');
+      return;
+    }
+    reconnectRef.current = 0;
+    connectWS(credsRef.current.sessionId, credsRef.current.mobileToken);
+  }, [connectWS]);
 
   // ── Pair via code ─────────────────────────────────────────────────────────
   const joinWithCode = useCallback(async (rawCode: string) => {
@@ -287,12 +368,14 @@ export default function App() {
     try {
       const { w, h } = vpSizeRef.current;
       const rotated = isSoftwareRotated(horizontalModeRef.current, w, h);
+      const qrSecret = new URLSearchParams(window.location.search).get('qr') || '';
       const res  = await fetch('/api/pair/join', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           pairCode:    clean,
           aspectRatio: getTabletAspect(w, h, rotated),
+          qrSecret,
         }),
       });
       const data = await res.json();
@@ -416,6 +499,7 @@ export default function App() {
 
     sendMsg('stroke.start', {
       strokeId,
+      deviceId: deviceIdRef.current,
       tool:  toolStateRef.current.tool,
       color: toolStateRef.current.color,
       width: toolStateRef.current.width,
@@ -623,22 +707,103 @@ export default function App() {
     setMenuOpen(false);
   };
 
+  // ── Waiting for PC approval screen ───────────────────────────────────────
+  if (status === 'waiting_approval') {
+    return (
+      <div style={{
+        height: '100%', display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center', padding: 24, gap: 12,
+      }}>
+        <div style={{
+          width: 12, height: 12, borderRadius: '50%', background: '#38bdf8',
+          boxShadow: '0 0 12px rgba(56,189,248,0.8)',
+        }} />
+        <h2 style={{ margin: 0, fontSize: 18, color: '#f8fafc' }}>Waiting for PC Approval</h2>
+        <p style={{ margin: 0, color: '#94a3b8', fontSize: 13, textAlign: 'center', maxWidth: 260 }}>
+          Click <strong>Allow</strong> on your desktop to connect <strong>{deviceName}</strong>.
+        </p>
+        <button
+          onClick={() => {
+            manualDisconnectRef.current = true;
+            credsRef.current = null;
+            wsRef.current?.close();
+            setStatus('unpaired');
+          }}
+          style={{
+            marginTop: 8, background: '#1e293b', color: '#cbd5e1', border: '1px solid #334155',
+            borderRadius: 10, padding: '9px 18px', fontSize: 13, cursor: 'pointer',
+          }}
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
+  // ── Disconnected screen (1-tap reconnect) ─────────────────────────────────
+  if (status === 'disconnected') {
+    return (
+      <div style={{
+        height: '100%', display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center', padding: 24, gap: 14,
+      }}>
+        <h2 style={{ margin: 0, fontSize: 18, color: '#f8fafc' }}>Disconnected</h2>
+        <p style={{ margin: 0, color: '#94a3b8', fontSize: 13, textAlign: 'center' }}>
+          Paused connection for {deviceName}.
+        </p>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button
+            onClick={reconnectPhone}
+            style={{
+              background: '#0284c7', color: '#fff', border: 'none',
+              borderRadius: 10, padding: '11px 22px', fontSize: 15, fontWeight: 600, cursor: 'pointer',
+            }}
+          >
+            Reconnect
+          </button>
+          <button
+            onClick={() => { credsRef.current = null; setStatus('unpaired'); }}
+            style={{
+              background: '#1e293b', color: '#cbd5e1', border: '1px solid #334155',
+              borderRadius: 10, padding: '11px 16px', fontSize: 14, cursor: 'pointer',
+            }}
+          >
+            Pair New
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // ── Pairing screen ────────────────────────────────────────────────────────
   if (status === 'unpaired' || status === 'error') {
     return (
       <div style={{
         height: '100%', display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center', padding: 24, gap: 16,
+        alignItems: 'center', justifyContent: 'center', padding: 24, gap: 14,
       }}>
         <img
           src={`${import.meta.env.BASE_URL}logo_with_text.png`}
           alt="Scripta"
-          style={{ width: 'min(280px, 80vw)', height: 'auto', display: 'block' }}
+          style={{ width: 'min(260px, 76vw)', height: 'auto', display: 'block' }}
         />
         <h2 style={{ margin: 0, fontSize: 16, color: '#94a3b8', fontWeight: 500 }}>Phone Tablet</h2>
         <p style={{ margin: 0, color: '#94a3b8', fontSize: 14, textAlign: 'center' }}>
           Enter the 6-character code shown on your desktop, or scan the QR code.
         </p>
+        <input
+          value={deviceName}
+          onChange={(e) => {
+            setDeviceName(e.target.value);
+            try { window.localStorage.setItem(DEVICE_NAME_KEY, e.target.value); } catch { /* ignore */ }
+          }}
+          placeholder="Device name"
+          maxLength={24}
+          style={{
+            background: '#0f172a', color: '#cbd5e1', border: '1px solid #334155',
+            borderRadius: 8, padding: '8px 12px', fontSize: 13, textAlign: 'center', width: 200,
+          }}
+        />
         <input
           value={codeInput}
           onChange={(e) => setCodeInput(e.target.value.toUpperCase())}
@@ -923,6 +1088,23 @@ export default function App() {
               <span>Full</span>
             </button>
           </div>
+
+          <button
+            onClick={disconnectPhone}
+            style={{
+              background: 'rgba(251,113,133,0.14)',
+              color: '#fda4af',
+              border: '1px solid rgba(251,113,133,0.35)',
+              borderRadius: 8,
+              padding: '6px 8px',
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: 'pointer',
+              width: '100%',
+            }}
+          >
+            Disconnect
+          </button>
         </div>
       )}
 
