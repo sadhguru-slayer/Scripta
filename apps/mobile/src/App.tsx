@@ -13,6 +13,8 @@ type ConnStatus = 'unpaired' | 'connecting' | 'connected' | 'reconnecting' | 'er
 const PREVIEW_HOLD_MS    = 750;
 const PREVIEW_FADE_MS    = 1000;
 const PREVIEW_BASE_ALPHA = 0.45;
+const COLORS             = ['#f8fafc', '#38bdf8', '#34d399', '#fbbf24', '#fb7185'];
+const WIDTHS             = [2, 4, 7];
 
 interface MobilePreviewStroke {
   points: StrokePoint[];
@@ -74,6 +76,7 @@ export default function App() {
   }));
   /** Reflects the cursor mode reported by the desktop via desktop.cursor. */
   const [cursorMode, setCursorMode] = useState<'draw' | 'move'>('draw');
+  const [undoFlash,  setUndoFlash]  = useState(false);
   const [toolState,  setToolState]  = useState<{
     tool: ToolType;
     color: string;
@@ -93,9 +96,20 @@ export default function App() {
     origX: number; origY: number; moved: boolean;
   } | null>(null);
 
-  // Pointer tracking — tablet surface + fading ink preview
+  // Pointer tracking — tablet surface + fading ink preview + multi-touch gestures
   const previewCanvasRef   = useRef<HTMLCanvasElement | null>(null);
   const activePointerIdRef = useRef<number | null>(null);
+  const padPointersRef     = useRef<Map<number, {
+    startX: number; startY: number; curX: number; curY: number; downAt: number;
+  }>>(new Map());
+  const twoFingerRef       = useRef<{
+    mode: 'pending' | 'move';
+    moverId: number | null;
+    startedAt: number;
+    maxMoveSq: number;
+    tempMove: boolean;
+  } | null>(null);
+  const undoFlashTimerRef  = useRef<number | null>(null);
   const lastPixelRef       = useRef<{ x: number; y: number } | null>(null);
   const previewSmoothRef   = useRef<{ x: number; y: number } | null>(null);
   const strokeStartTsRef   = useRef<number>(0);
@@ -204,7 +218,21 @@ export default function App() {
         cancelAnimationFrame(previewRafIdRef.current);
         previewRafIdRef.current = null;
       }
+      if (undoFlashTimerRef.current !== null) {
+        window.clearTimeout(undoFlashTimerRef.current);
+      }
     };
+  }, []);
+
+  const triggerUndoFeedback = useCallback(() => {
+    setUndoFlash(true);
+    if (undoFlashTimerRef.current !== null) {
+      window.clearTimeout(undoFlashTimerRef.current);
+    }
+    undoFlashTimerRef.current = window.setTimeout(() => {
+      setUndoFlash(false);
+      undoFlashTimerRef.current = null;
+    }, 700);
   }, []);
 
   // ── WebSocket connect / reconnect ─────────────────────────────────────────
@@ -358,32 +386,26 @@ export default function App() {
     return () => window.removeEventListener('resize', handleResize);
   }, [sendMsg, finishPadPointer, clearPreviews]);
 
-  // ── Pad pointer events ────────────────────────────────────────────────────
-  const onPadPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (status !== 'connected') return;
-    if (menuOpen) { setMenuOpen(false); return; }
-    if (activePointerIdRef.current !== null) return;
-
-    activePointerIdRef.current = e.pointerId;
-    e.currentTarget.setPointerCapture(e.pointerId);
-
+  // ── Pad pointer events (single-finger draw + 2-finger tap undo + 2nd-finger cursor move) ──
+  const startStrokeForPointer = (pointerId: number, clientX: number, clientY: number, pressure: number, forceMove = false) => {
+    activePointerIdRef.current = pointerId;
     const { w, h } = vpSizeRef.current;
     const rotated = isSoftwareRotated(horizontalModeRef.current, w, h);
-    const norm    = clientToTabletNorm(e.clientX, e.clientY, w, h, rotated);
-    lastPixelRef.current = { x: e.clientX, y: e.clientY };
-    previewSmoothRef.current = { x: e.clientX, y: e.clientY };
+    const norm    = clientToTabletNorm(clientX, clientY, w, h, rotated);
+    lastPixelRef.current = { x: clientX, y: clientY };
+    previewSmoothRef.current = { x: clientX, y: clientY };
 
-    // All gestures start with stroke.start — desktop classifies draw vs. move.
     const now = Date.now();
     strokeStartTsRef.current = now;
     const strokeId = `m_${now}_${Math.random().toString(36).slice(2, 6)}`;
     activeStrokeIdRef.current = strokeId;
 
-    const p = e.pressure > 0 ? e.pressure : 0.5;
-    if (cursorModeRef.current !== 'move') {
+    const p = pressure > 0 ? pressure : 0.5;
+    const noPreview = forceMove || cursorModeRef.current === 'move' || toolStateRef.current.tool === 'select';
+    if (!noPreview) {
       const isEraser = toolStateRef.current.tool === 'eraser';
       activePreviewRef.current = {
-        points: [{ x: e.clientX, y: e.clientY, p, dt: 0 }],
+        points: [{ x: clientX, y: clientY, p, dt: 0 }],
         tool: isEraser ? 'pen' : toolStateRef.current.tool,
         color: isEraser ? '#fb7185' : toolStateRef.current.color,
         baseWidth: isEraser ? 2.5 : toolStateRef.current.width,
@@ -401,7 +423,70 @@ export default function App() {
     });
   };
 
+  const onPadPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (status !== 'connected') return;
+    if (menuOpen) { setMenuOpen(false); return; }
+
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    padPointersRef.current.set(e.pointerId, {
+      startX: e.clientX,
+      startY: e.clientY,
+      curX: e.clientX,
+      curY: e.clientY,
+      downAt: Date.now(),
+    });
+
+    if (padPointersRef.current.size === 1 && !twoFingerRef.current) {
+      startStrokeForPointer(e.pointerId, e.clientX, e.clientY, e.pressure);
+      return;
+    }
+
+    if (padPointersRef.current.size === 2 && !twoFingerRef.current) {
+      // Cancel any single-finger draw stroke so 2-finger tap / 2nd-finger move never leaves ink
+      finishPadPointer(true);
+      twoFingerRef.current = {
+        mode: 'pending',
+        moverId: null,
+        startedAt: Date.now(),
+        maxMoveSq: 0,
+        tempMove: false,
+      };
+    }
+  };
+
   const onPadPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const tracked = padPointersRef.current.get(e.pointerId);
+    if (tracked) {
+      tracked.curX = e.clientX;
+      tracked.curY = e.clientY;
+    }
+
+    const tf = twoFingerRef.current;
+    if (tf && tracked) {
+      const dx = e.clientX - tracked.startX;
+      const dy = e.clientY - tracked.startY;
+      const distSq = dx * dx + dy * dy;
+      if (distSq > tf.maxMoveSq) tf.maxMoveSq = distSq;
+
+      if (tf.mode === 'pending' && distSq > 64) {
+        // 1 finger held + 2nd finger moved -> cursor move mode (same as Ctrl + phone)
+        tf.mode = 'move';
+        tf.moverId = e.pointerId;
+        if (cursorModeRef.current !== 'move') {
+          tf.tempMove = true;
+          cursorModeRef.current = 'move';
+          setCursorMode('move');
+          sendMsg('command.trigger', { action: 'enter_move' });
+        }
+        startStrokeForPointer(e.pointerId, e.clientX, e.clientY, e.pressure, true);
+        return;
+      }
+
+      if (tf.mode === 'move' && e.pointerId !== tf.moverId) {
+        return;
+      }
+    }
+
     if (e.pointerId !== activePointerIdRef.current) return;
 
     const { w, h } = vpSizeRef.current;
@@ -410,7 +495,8 @@ export default function App() {
       ? e.nativeEvent.getCoalescedEvents()
       : [e.nativeEvent];
 
-    const previewStroke = cursorModeRef.current !== 'move' ? activePreviewRef.current : null;
+    const noPreview = cursorModeRef.current === 'move' || toolStateRef.current.tool === 'select';
+    const previewStroke = !noPreview ? activePreviewRef.current : null;
     const smoothness = toolStateRef.current.smoothness ?? DEFAULT_PHONE_SMOOTHNESS;
     let addedPreview = false;
 
@@ -441,6 +527,41 @@ export default function App() {
     }
     if (pendingPointsRef.current.length > 0 && rafIdRef.current === null) {
       rafIdRef.current = requestAnimationFrame(flushBatch);
+    }
+  };
+
+  const onPadPointerEnd = (e: React.PointerEvent<HTMLDivElement>, cancelled: boolean) => {
+    padPointersRef.current.delete(e.pointerId);
+    const tf = twoFingerRef.current;
+    if (tf) {
+      if (tf.mode === 'move') {
+        if (e.pointerId === tf.moverId) {
+          finishPadPointer(cancelled);
+          tf.moverId = null;
+        }
+        if (padPointersRef.current.size === 0) {
+          if (tf.tempMove) {
+            cursorModeRef.current = 'draw';
+            setCursorMode('draw');
+            sendMsg('command.trigger', { action: 'exit_move' });
+          }
+          twoFingerRef.current = null;
+        }
+        return;
+      }
+
+      if (padPointersRef.current.size === 0) {
+        if (!cancelled && tf.maxMoveSq < 144 && (Date.now() - tf.startedAt) < 400) {
+          sendMsg('command.trigger', { action: 'undo' });
+          triggerUndoFeedback();
+        }
+        twoFingerRef.current = null;
+      }
+      return;
+    }
+
+    if (e.pointerId === activePointerIdRef.current) {
+      finishPadPointer(cancelled);
     }
   };
 
@@ -549,8 +670,8 @@ export default function App() {
   const isMove              = cursorMode === 'move';
 
   // Compute menu box coordinates safely inside the viewport whether rotated or not.
-  const menuW = 216;
-  const estMenuH = rotated ? Math.min(316, vpSize.w - 24) : 316;
+  const menuW = 192;
+  const estMenuH = rotated ? Math.min(204, vpSize.w - 24) : 204;
   let menuLeft: number;
   let menuTop: number;
   if (rotated) {
@@ -578,8 +699,8 @@ export default function App() {
       <div
         onPointerDown={onPadPointerDown}
         onPointerMove={onPadPointerMove}
-        onPointerUp={() => finishPadPointer(false)}
-        onPointerCancel={() => finishPadPointer(true)}
+        onPointerUp={(e) => onPadPointerEnd(e, false)}
+        onPointerCancel={(e) => onPadPointerEnd(e, true)}
         style={{
           position: 'relative',
           width: '100%', height: '100%', touchAction: 'none',
@@ -632,7 +753,29 @@ export default function App() {
         </span>
       </div>
 
-      {/* ── Floating Options Menu ── */}
+      {undoFlash && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 14,
+            left: '50%',
+            transform: rotated ? 'translateX(-50%) rotate(90deg)' : 'translateX(-50%)',
+            padding: '4px 12px',
+            borderRadius: 999,
+            background: 'rgba(15,23,42,0.9)',
+            border: '1px solid #38bdf8',
+            color: '#f8fafc',
+            fontSize: 11,
+            fontWeight: 600,
+            pointerEvents: 'none',
+            zIndex: 40,
+          }}
+        >
+          Undo
+        </div>
+      )}
+
+      {/* ── Compact Floating Options Menu ── */}
       {menuOpen && (
         <div
           onPointerDown={(e) => e.stopPropagation()}
@@ -641,96 +784,145 @@ export default function App() {
             left: menuLeft,
             top:  menuTop,
             width: menuW,
-            maxHeight: rotated ? Math.max(200, vpSize.w - 24) : Math.max(200, vpSize.h - 24),
+            maxHeight: rotated ? Math.max(180, vpSize.w - 24) : Math.max(180, vpSize.h - 24),
             overflowY: 'auto',
             transform: rotated ? 'rotate(90deg)' : 'none',
             transformOrigin: 'center center',
             background: 'rgba(15,23,42,0.96)', border: '1px solid #334155',
-            borderRadius: 14, padding: 10, display: 'flex', flexDirection: 'column',
-            gap: 6, backdropFilter: 'blur(12px)',
+            borderRadius: 14, padding: 8, display: 'flex', flexDirection: 'column',
+            gap: 8, backdropFilter: 'blur(12px)',
             boxShadow: '0 12px 32px rgba(0,0,0,0.5)', zIndex: 20,
           }}
         >
-          {/* Connection status row */}
-          <div style={{
-            fontSize: 11, color: '#94a3b8', padding: '2px 6px 8px',
-            borderBottom: '1px solid #1e293b', display: 'flex', alignItems: 'center', gap: 6,
-          }}>
-            <span style={{
-              width: 8, height: 8, borderRadius: '50%',
-              background: status === 'connected' ? '#10b981' : '#fbbf24',
-            }} />
-            {status === 'connected'
-              ? `Live · ${isMove ? 'Move Window' : 'Draw'} (${effectiveHorizontal ? 'Horiz' : 'Vert'})`
-              : status}
+          {/* Color swatches */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 4px' }}>
+            {COLORS.map((c) => (
+              <button
+                key={c}
+                onClick={() => {
+                  setToolState((prev) => ({ ...prev, color: c }));
+                  sendMsg('mobile.style', { color: c });
+                }}
+                aria-label={`Color ${c}`}
+                style={{
+                  width: 22, height: 22, borderRadius: '50%', background: c, padding: 0, cursor: 'pointer',
+                  border: toolState.color === c ? '2px solid #fff' : '2px solid transparent',
+                  boxSizing: 'border-box',
+                }}
+              />
+            ))}
           </div>
 
-          {/* Move / Draw toggle — sends command to desktop to flip modifier state */}
-          <button
-            onClick={() => {
-              sendMsg('command.trigger', { action: isMove ? 'exit_move' : 'enter_move' });
-              setMenuOpen(false);
-            }}
-            style={menuBtn(isMove)}
-          >
-            <MoveIcon size={14} />
-            <span>{isMove ? 'Stop Moving Window' : 'Move Cursor / Window'}</span>
-          </button>
+          {/* Brush widths + Pen / Eraser */}
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            paddingBottom: 6, borderBottom: '1px solid #1e293b', gap: 4,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              {WIDTHS.map((w, idx) => {
+                const active = toolState.width === w;
+                return (
+                  <button
+                    key={w}
+                    onClick={() => {
+                      setToolState((prev) => ({ ...prev, width: w }));
+                      sendMsg('mobile.style', { width: w });
+                    }}
+                    aria-label={`Width ${w}`}
+                    style={compactToggleBtn(active)}
+                  >
+                    <span style={{
+                      width: 4 + idx * 3,
+                      height: 4 + idx * 3,
+                      borderRadius: '50%',
+                      background: '#f8fafc',
+                      display: 'block',
+                    }} />
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <button
+                onClick={() => {
+                  setToolState((prev) => ({ ...prev, tool: 'pen' }));
+                  sendMsg('mobile.style', { tool: 'pen' });
+                }}
+                aria-label="Pen"
+                style={compactToggleBtn(toolState.tool === 'pen')}
+              >
+                <PenIcon size={13} />
+              </button>
+              <button
+                onClick={() => {
+                  setToolState((prev) => ({ ...prev, tool: 'eraser' }));
+                  sendMsg('mobile.style', { tool: 'eraser' });
+                }}
+                aria-label="Eraser"
+                style={compactToggleBtn(toolState.tool === 'eraser')}
+              >
+                <EraserIcon size={13} />
+              </button>
+            </div>
+          </div>
 
-          {/* Horizontal / Vertical pad orientation toggle */}
-          <button
-            onClick={toggleHorizontalMode}
-            disabled={osLandscape}
-            title={osLandscape ? 'Device is already rotated to landscape' : 'Rotate tablet surface 90° for horizontal writing'}
-            style={{
-              ...menuBtn(effectiveHorizontal),
-              opacity: osLandscape ? 0.75 : 1,
-            }}
-          >
-            <RotateIcon size={14} />
-            <span>
-              {osLandscape
-                ? 'Horizontal (Auto)'
-                : horizontalMode
-                  ? 'Vertical Mode'
-                  : 'Horizontal Mode'}
-            </span>
-          </button>
+          {/* 3x2 compact action grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 5 }}>
+            <button
+              onClick={() => {
+                sendMsg('command.trigger', { action: isMove ? 'exit_move' : 'enter_move' });
+                setMenuOpen(false);
+              }}
+              style={compactGridBtn(isMove)}
+            >
+              <MoveIcon size={14} />
+              <span>Move</span>
+            </button>
 
-          <button
-            onClick={() => { sendMsg('command.trigger', { action: 'recenter_cursor' }); setMenuOpen(false); }}
-            style={menuBtn(false)}
-          >
-            <CenterIcon size={14} />
-            <span>Re-center Window</span>
-          </button>
+            <button
+              onClick={toggleHorizontalMode}
+              disabled={osLandscape}
+              style={{ ...compactGridBtn(effectiveHorizontal), opacity: osLandscape ? 0.65 : 1 }}
+            >
+              <RotateIcon size={14} />
+              <span>{effectiveHorizontal ? 'Horiz' : 'Vert'}</span>
+            </button>
 
-          <button
-            onClick={() => { sendMsg('command.trigger', { action: 'undo' }); setMenuOpen(false); }}
-            style={menuBtn(false)}
-          >
-            <UndoIcon size={14} />
-            <span>Undo on Desktop</span>
-          </button>
+            <button
+              onClick={() => { sendMsg('command.trigger', { action: 'recenter_cursor' }); setMenuOpen(false); }}
+              style={compactGridBtn(false)}
+            >
+              <CenterIcon size={14} />
+              <span>Center</span>
+            </button>
 
-          <button
-            onClick={() => {
-              activePreviewRef.current = null;
-              fadingPreviewsRef.current = [];
-              schedulePreviewRender();
-              sendMsg('command.trigger', { action: 'clear' });
-              setMenuOpen(false);
-            }}
-            style={menuBtn(false)}
-          >
-            <ClearIcon size={14} />
-            <span>Clear Desktop</span>
-          </button>
+            <button
+              onClick={() => { sendMsg('command.trigger', { action: 'undo' }); setMenuOpen(false); }}
+              style={compactGridBtn(false)}
+            >
+              <UndoIcon size={14} />
+              <span>Undo</span>
+            </button>
 
-          <button onClick={toggleFullscreen} style={menuBtn(false)}>
-            <FullscreenIcon size={14} />
-            <span>Toggle Fullscreen</span>
-          </button>
+            <button
+              onClick={() => {
+                activePreviewRef.current = null;
+                fadingPreviewsRef.current = [];
+                schedulePreviewRender();
+                sendMsg('command.trigger', { action: 'clear' });
+                setMenuOpen(false);
+              }}
+              style={compactGridBtn(false)}
+            >
+              <ClearIcon size={14} />
+              <span>Clear</span>
+            </button>
+
+            <button onClick={toggleFullscreen} style={compactGridBtn(false)}>
+              <FullscreenIcon size={14} />
+              <span>Full</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -744,7 +936,7 @@ export default function App() {
           position: 'fixed', left: fabPos.x, top: fabPos.y,
           width: 48, height: 48, borderRadius: '50%',
           background: isMove ? '#0284c7' : 'rgba(15,23,42,0.9)',
-          border: `2px solid ${status === 'connected' ? (isMove ? '#38bdf8' : '#334155') : '#fbbf24'}`,
+          border: `2px solid ${status === 'connected' ? (isMove ? '#38bdf8' : toolState.color) : '#fbbf24'}`,
           color: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center',
           transform: rotated ? 'rotate(90deg)' : 'none',
           transition: 'transform 0.2s ease',
@@ -758,13 +950,47 @@ export default function App() {
   );
 }
 
-function menuBtn(active: boolean): React.CSSProperties {
+function compactToggleBtn(active: boolean): React.CSSProperties {
+  return {
+    width: 28,
+    height: 28,
+    borderRadius: 7,
+    background: active ? '#0369a1' : '#1e293b',
+    border: `1px solid ${active ? '#38bdf8' : '#334155'}`,
+    color: '#f8fafc',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+    cursor: 'pointer',
+  };
+}
+
+function compactGridBtn(active: boolean): React.CSSProperties {
   return {
     background: active ? '#0369a1' : '#1e293b',
-    color: '#f8fafc', border: `1px solid ${active ? '#38bdf8' : '#334155'}`,
-    borderRadius: 8, padding: '9px 11px', fontSize: 13, textAlign: 'left', cursor: 'pointer',
-    display: 'flex', alignItems: 'center', gap: 8,
+    color: '#f8fafc',
+    border: `1px solid ${active ? '#38bdf8' : '#334155'}`,
+    borderRadius: 8,
+    padding: '7px 4px',
+    fontSize: 10,
+    cursor: 'pointer',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
   };
+}
+
+function EraserIcon({ size }: { size: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21" />
+      <path d="M22 21H7" />
+      <path d="m5 11 9 9" />
+    </svg>
+  );
 }
 
 function PenIcon({ size }: { size: number }) {

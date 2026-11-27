@@ -190,6 +190,7 @@ export default function App() {
   // ── Canvas refs ──────────────────────────────────────────────────────────
   const staticCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const activeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const cursorCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // ── Board state refs ─────────────────────────────────────────────────────
   const elementsRef        = useRef<BoardElement[]>([]);
@@ -201,6 +202,7 @@ export default function App() {
   const erasingLocalRef    = useRef<ErasedEntry[] | null>(null);
   const erasingRemoteRef   = useRef<Map<string, ErasedEntry[]>>(new Map());
   const remotePrevNormRef  = useRef<Map<string, Point2D>>(new Map());
+  const remoteMoveMetaRef  = useRef<Map<string, { startNorm: Point2D; maxDistSq: number; startedAt: number }>>(new Map());
 
   // Selection / editing refs
   const selectedIdRef      = useRef<string | null>(null);
@@ -651,46 +653,62 @@ export default function App() {
       }
     }
 
-    // ── Unified Board Cursor (visible when phone is connected) ───────────
-    if (phoneConnectedRef.current) {
-      const isMove   = modHeldRef.current;
-      const isEraser = !isMove && toolRef.current === 'eraser';
-      const { x, y } = cursorDisplayWorldRef.current;
-
-      const penR  = isEraser ? Math.max(widthRef.current * 1.5, 8 / cam.zoom) : widthRef.current / 2;
-      const minR  = 4 / cam.zoom;
-      const ringR = Math.max(penR, minR);
-      const ringColor = isMove ? '#38bdf8' : isEraser ? '#fb7185' : colorRef.current;
-
-      const armStart = ringR * 1.25;
-      const armEnd   = ringR * 2.5;
-      const lw       = 1.5 / cam.zoom;
-
-      ctx.save();
-      ctx.lineWidth   = lw;
-      ctx.strokeStyle = isMove ? '#38bdf8' : isEraser ? 'rgba(251,113,133,0.85)' : 'rgba(248,250,252,0.85)';
-      ctx.beginPath();
-      ctx.moveTo(x - armEnd, y); ctx.lineTo(x - armStart, y);
-      ctx.moveTo(x + armStart, y); ctx.lineTo(x + armEnd, y);
-      ctx.moveTo(x, y - armEnd); ctx.lineTo(x, y - armStart);
-      ctx.moveTo(x, y + armStart); ctx.lineTo(x, y + armEnd);
-      ctx.stroke();
-
-      ctx.beginPath();
-      ctx.arc(x, y, ringR, 0, Math.PI * 2);
-      ctx.strokeStyle = ringColor;
-      ctx.lineWidth   = lw;
-      ctx.stroke();
-
-      ctx.beginPath();
-      ctx.arc(x, y, lw * 1.5, 0, Math.PI * 2);
-      ctx.fillStyle = ringColor;
-      ctx.fill();
-      ctx.restore();
-    }
-
     ctx.restore();
   }, [buildElementMap, renderDraft]);
+
+  const renderCursorLayer = useCallback(() => {
+    const canvas = cursorCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const dpr = dprRef.current;
+    const w   = vpWidthRef.current;
+    const h   = vpHeightRef.current;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    if (!phoneConnectedRef.current) return;
+
+    const cam      = cameraRef.current;
+    const isMove   = modHeldRef.current || toolRef.current === 'select';
+    const isEraser = !isMove && toolRef.current === 'eraser';
+    const { x, y } = cursorDisplayWorldRef.current;
+
+    const penR  = isEraser ? Math.max(widthRef.current * 1.5, 8 / cam.zoom) : widthRef.current / 2;
+    const minR  = 4 / cam.zoom;
+    const ringR = Math.max(penR, minR);
+    const ringColor = isMove ? '#38bdf8' : isEraser ? '#fb7185' : colorRef.current;
+
+    const armStart = ringR * 1.25;
+    const armEnd   = ringR * 2.5;
+    const lw       = 1.5 / cam.zoom;
+
+    ctx.save();
+    ctx.translate(-cam.x * cam.zoom, -cam.y * cam.zoom);
+    ctx.scale(cam.zoom, cam.zoom);
+
+    ctx.lineWidth   = lw;
+    ctx.strokeStyle = isMove ? '#38bdf8' : isEraser ? 'rgba(251,113,133,0.85)' : 'rgba(248,250,252,0.85)';
+    ctx.beginPath();
+    ctx.moveTo(x - armEnd, y); ctx.lineTo(x - armStart, y);
+    ctx.moveTo(x + armStart, y); ctx.lineTo(x + armEnd, y);
+    ctx.moveTo(x, y - armEnd); ctx.lineTo(x, y - armStart);
+    ctx.moveTo(x, y + armStart); ctx.lineTo(x, y + armEnd);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(x, y, ringR, 0, Math.PI * 2);
+    ctx.strokeStyle = ringColor;
+    ctx.lineWidth   = lw;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(x, y, lw * 1.5, 0, Math.PI * 2);
+    ctx.fillStyle = ringColor;
+    ctx.fill();
+    ctx.restore();
+  }, []);
 
   // ── rAF-coalesced render scheduler & smooth cursor slide loop ────────────
   const runRenderFrame = useCallback((now: number) => {
@@ -729,6 +747,7 @@ export default function App() {
     if (dirtyActiveRef.current || cursorAnimating) {
       dirtyActiveRef.current = false;
       renderActiveLayer();
+      renderCursorLayer();
     }
 
     if (
@@ -741,7 +760,7 @@ export default function App() {
     } else {
       lastFrameTsRef.current = null;
     }
-  }, [renderStaticLayer, appendElementToStaticLayer, renderActiveLayer]);
+  }, [renderStaticLayer, appendElementToStaticLayer, renderActiveLayer, renderCursorLayer]);
 
   const scheduleRender = useCallback((opts?: { static?: boolean; active?: boolean }) => {
     if (opts?.static) dirtyStaticRef.current = true;
@@ -772,7 +791,7 @@ export default function App() {
       vpWidthRef.current  = w;
       vpHeightRef.current = h;
 
-      for (const c of [staticCanvasRef.current, activeCanvasRef.current]) {
+      for (const c of [staticCanvasRef.current, activeCanvasRef.current, cursorCanvasRef.current]) {
         if (!c) continue;
         c.width        = w * dpr;
         c.height       = h * dpr;
@@ -788,11 +807,12 @@ export default function App() {
       }
       renderStaticLayer();
       renderActiveLayer();
+      renderCursorLayer();
     };
     handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, [renderStaticLayer, renderActiveLayer]);
+  }, [renderStaticLayer, renderActiveLayer, renderCursorLayer]);
 
   // ── Restore saved board from localStorage on startup ──────────────────────
   useEffect(() => {
@@ -1101,13 +1121,12 @@ export default function App() {
     scheduleSave();
   }, [scheduleRender, scheduleSave]);
 
-  const autoPanToWorldPoint = useCallback((pt: Point2D): boolean => {
+  const autoPanToWorldPoint = useCallback((pt: Point2D, margin = 56): boolean => {
     const cam    = cameraRef.current;
     const w      = vpWidthRef.current;
     const h      = vpHeightRef.current;
     const sx     = (pt.x - cam.x) * cam.zoom;
     const sy     = (pt.y - cam.y) * cam.zoom;
-    const margin = 56;
     let panned   = false;
 
     if (sx < margin)           { cam.x -= (margin - sx) / cam.zoom; panned = true; }
@@ -1160,7 +1179,9 @@ export default function App() {
     windowCenterRef.current.y      += dy;
     needsWindowAlignRef.current     = true;
 
-    const panned = autoPanToWorldPoint(cursorTargetWorldRef.current);
+    // In move or select mode, let the cursor reach over the top/bottom toolbars (6px edge margin).
+    const margin = (modHeldRef.current || toolRef.current === 'select') ? 6 : 56;
+    const panned = autoPanToWorldPoint(cursorTargetWorldRef.current, margin);
     scheduleRender({ static: panned, active: true });
   }, [autoPanToWorldPoint, scheduleRender]);
 
@@ -1433,13 +1454,18 @@ export default function App() {
 
       case 'stroke.start': {
         const { strokeId, tool: rawTool, color: c, width: bw, point } = msg.payload;
-        // Authoritative desktop tool ensures select/shape/connector updates apply instantly
-        const activeTool = toolRef.current === 'select' ? 'pen' : toolRef.current || rawTool;
 
-        if (modHeldRef.current) {
+        if (modHeldRef.current || toolRef.current === 'select') {
           remotePrevNormRef.current.set(strokeId, { x: point.x, y: point.y });
+          remoteMoveMetaRef.current.set(strokeId, {
+            startNorm: { x: point.x, y: point.y },
+            maxDistSq: 0,
+            startedAt: Date.now(),
+          });
           break;
         }
+
+        const activeTool = toolRef.current || rawTool;
 
         if (needsWindowAlignRef.current) {
           windowCenterRef.current = alignWritingWindowCenter(
@@ -1526,6 +1552,13 @@ export default function App() {
         if (remotePrevNormRef.current.has(strokeId)) {
           const prevNorm = remotePrevNormRef.current.get(strokeId)!;
           const newest   = points[points.length - 1];
+          const meta     = remoteMoveMetaRef.current.get(strokeId);
+          if (meta) {
+            for (const p of points) {
+              const dSq = (p.x - meta.startNorm.x) ** 2 + (p.y - meta.startNorm.y) ** 2;
+              if (dSq > meta.maxDistSq) meta.maxDistSq = dSq;
+            }
+          }
           const { dx, dy } = normDeltaToWorld(
             newest.x - prevNorm.x,
             newest.y - prevNorm.y,
@@ -1627,11 +1660,51 @@ export default function App() {
 
       case 'stroke.end': {
         const { strokeId } = msg.payload;
+        const moveMeta = remoteMoveMetaRef.current.get(strokeId);
+        remoteMoveMetaRef.current.delete(strokeId);
+        const wasMoveGesture = remotePrevNormRef.current.has(strokeId);
         remotePrevNormRef.current.delete(strokeId);
         remotePrevNormRef.current.delete(drawKey(strokeId));
         const lastRaw = remoteLastRawPointRef.current.get(strokeId);
         remoteSmoothNormRef.current.delete(strokeId);
         remoteLastRawPointRef.current.delete(strokeId);
+
+        if (wasMoveGesture) {
+          if (moveMeta && moveMeta.maxDistSq < 0.0004 && Date.now() - moveMeta.startedAt < 320) {
+            const cam = cameraRef.current;
+            const wp  = cursorTargetWorldRef.current;
+            const sx  = (wp.x - cam.x) * cam.zoom;
+            const sy  = (wp.y - cam.y) * cam.zoom;
+            const hitDom = document.elementFromPoint(sx, sy);
+            if (
+              hitDom &&
+              hitDom !== activeCanvasRef.current &&
+              hitDom !== staticCanvasRef.current &&
+              hitDom !== cursorCanvasRef.current
+            ) {
+              const clickable = hitDom.closest('button, [role="button"], a, input, select') as HTMLElement | null;
+              if (clickable) {
+                clickable.click();
+                if (clickable.tagName === 'INPUT') clickable.focus();
+                break;
+              }
+            }
+            if (toolRef.current === 'select') {
+              const byId = buildElementMap();
+              const hitR = 8 / cam.zoom;
+              let hitEl: BoardElement | null = null;
+              for (let i = elementsRef.current.length - 1; i >= 0; i--) {
+                if (hitTestElement(elementsRef.current[i], wp, hitR, byId)) {
+                  hitEl = elementsRef.current[i];
+                  break;
+                }
+              }
+              selectElement(hitEl ? hitEl.id : null);
+              scheduleRender({ active: true });
+            }
+          }
+          break;
+        }
 
         const eraseBuf = erasingRemoteRef.current.get(strokeId);
         if (eraseBuf) {
@@ -1699,15 +1772,34 @@ export default function App() {
 
       case 'stroke.cancel': {
         const { strokeId } = msg.payload;
+        remoteMoveMetaRef.current.delete(strokeId);
         remotePrevNormRef.current.delete(strokeId);
         remotePrevNormRef.current.delete(drawKey(strokeId));
         remoteSmoothNormRef.current.delete(strokeId);
         remoteLastRawPointRef.current.delete(strokeId);
+        const erased = erasingRemoteRef.current.get(strokeId);
+        if (erased && erased.length > 0) {
+          for (let i = erased.length - 1; i >= 0; i--) {
+            const { index, element } = erased[i];
+            elementsRef.current.splice(Math.min(index, elementsRef.current.length), 0, element);
+          }
+          scheduleRender({ static: true, active: true });
+        }
         erasingRemoteRef.current.delete(strokeId);
         activeRemoteDraftRef.current.delete(strokeId);
         activeRemoteRef.current.delete(strokeId);
         snapPreviewRef.current = null;
         scheduleRender({ active: true });
+        break;
+      }
+
+      case 'mobile.style': {
+        if (msg.payload.color) setColor(msg.payload.color);
+        if (typeof msg.payload.width === 'number') setWidth(msg.payload.width);
+        if (msg.payload.tool) {
+          setTool(msg.payload.tool);
+          if (msg.payload.tool !== 'select') selectElement(null);
+        }
         break;
       }
 
@@ -1734,7 +1826,7 @@ export default function App() {
     undo, clearBoard, moveCursorBy, cancelRemoteDrawStrokes,
     enterMoveMode, exitMoveMode, getWritingWindow, getCachedStrokePath,
     autoPanToWorldPoint, eraseAtPoint, commitDraftElement, syncHistoryFlags,
-    scheduleSave, sendToMobile, scheduleRender,
+    scheduleSave, sendToMobile, scheduleRender, buildElementMap, selectElement,
   ]);
 
   // ── Pairing ──────────────────────────────────────────────────────────────
@@ -2384,6 +2476,10 @@ export default function App() {
                 ? 'default'
                 : 'crosshair',
         }}
+      />
+      <canvas
+        ref={cursorCanvasRef}
+        style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 55 }}
       />
 
       {/* ── Inline Shape / Connector Label Editor ── */}

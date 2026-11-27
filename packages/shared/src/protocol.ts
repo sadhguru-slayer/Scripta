@@ -42,6 +42,10 @@ export type MobileToDesktopMessage =
   | WsEnvelope<
       'command.trigger',
       { action: 'undo' | 'clear' | 'enter_move' | 'exit_move' | 'recenter_cursor' }
+    >
+  | WsEnvelope<
+      'mobile.style',
+      { color?: string; width?: number; tool?: ToolType }
     >;
 
 export type DesktopToMobileMessage =

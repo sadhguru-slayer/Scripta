@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { ArrowSvg, BgSvg, PenSvg, UndoSvg } from './icons';
 import { assetUrl } from './assets';
 
@@ -50,11 +51,13 @@ export function LandingPage({ onStart, onTour, onConnect, onSkip }: LandingPageP
         </div>
 
         <header style={hero}>
-          <img
-            src={assetUrl('logo_with_text.png')}
-            alt="Scripta"
-            style={{ width: 'min(340px, 78vw)', height: 'auto', display: 'block' }}
-          />
+          <div style={logoWrap}>
+            <img
+              src={assetUrl('logo_with_text.png')}
+              alt="Scripta"
+              style={logoImg}
+            />
+          </div>
           <span style={badge}>No app install · Works with any phone</span>
           <h1 style={title}>
             Your phone is the pen.<br />Your laptop is the canvas.
@@ -69,6 +72,8 @@ export function LandingPage({ onStart, onTour, onConnect, onSkip }: LandingPageP
             <button onClick={onConnect} style={ghostBtn}>Connect phone</button>
           </div>
         </header>
+
+        <MiniSketchPad />
 
         <section style={grid}>
           {STEPS.map((s) => (
@@ -147,6 +152,25 @@ const content: React.CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   gap: 28,
+};
+
+const logoWrap: React.CSSProperties = {
+  width: 'min(300px, 76vw)',
+  aspectRatio: '3.2 / 1',
+  overflow: 'hidden',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+};
+
+const logoImg: React.CSSProperties = {
+  width: '100%',
+  height: '100%',
+  objectFit: 'cover',
+  objectPosition: 'center',
+  display: 'block',
+  filter: 'invert(1)',
+  mixBlendMode: 'screen',
 };
 
 const hero: React.CSSProperties = {
@@ -281,4 +305,178 @@ const footer: React.CSSProperties = {
   textAlign: 'center',
   fontSize: 11.5,
   color: '#64748b',
+};
+
+const PAD_COLORS = ['#f8fafc', '#38bdf8', '#34d399', '#fbbf24', '#fb7185'];
+
+function MiniSketchPad() {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const drawingRef = useRef(false);
+  const lastPtRef = useRef<{ x: number; y: number } | null>(null);
+  const [inkColor, setInkColor] = useState(PAD_COLORS[1]);
+  const [hasDrawn, setHasDrawn] = useState(false);
+
+  const resizeCanvas = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.round(rect.width * dpr));
+    canvas.height = Math.max(1, Math.round(rect.height * dpr));
+    const ctx = canvas.getContext('2d');
+    if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  };
+
+  useEffect(() => {
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+    return () => window.removeEventListener('resize', resizeCanvas);
+  }, []);
+
+  const getLocalPt = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
+
+  const onDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    drawingRef.current = true;
+    const pt = getLocalPt(e);
+    lastPtRef.current = pt;
+    setHasDrawn(true);
+    const ctx = canvasRef.current?.getContext('2d');
+    if (ctx) {
+      ctx.fillStyle = inkColor;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 1.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  };
+
+  const onMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!drawingRef.current || !lastPtRef.current) return;
+    const ctx = canvasRef.current?.getContext('2d');
+    if (!ctx) return;
+    const pt = getLocalPt(e);
+    ctx.strokeStyle = inkColor;
+    ctx.lineWidth = 3.2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(lastPtRef.current.x, lastPtRef.current.y);
+    ctx.lineTo(pt.x, pt.y);
+    ctx.stroke();
+    lastPtRef.current = pt;
+  };
+
+  const onUp = () => {
+    drawingRef.current = false;
+    lastPtRef.current = null;
+  };
+
+  const clearPad = () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (canvas && ctx) {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.restore();
+    }
+    setHasDrawn(false);
+  };
+
+  return (
+    <section style={sketchCard}>
+      <div style={sketchHeader}>
+        <span style={sketchLabel}>Try drawing right here</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {PAD_COLORS.map((c) => (
+            <button
+              key={c}
+              type="button"
+              onClick={() => setInkColor(c)}
+              aria-label={`Color ${c}`}
+              style={{
+                width: 14,
+                height: 14,
+                borderRadius: '50%',
+                background: c,
+                padding: 0,
+                cursor: 'pointer',
+                border: inkColor === c ? '2px solid #fff' : '2px solid transparent',
+              }}
+            />
+          ))}
+          <button type="button" onClick={clearPad} style={sketchClearBtn}>Clear</button>
+        </div>
+      </div>
+      <div style={{ position: 'relative', width: '100%', height: 150 }}>
+        <canvas
+          ref={canvasRef}
+          onPointerDown={onDown}
+          onPointerMove={onMove}
+          onPointerUp={onUp}
+          onPointerCancel={onUp}
+          style={{
+            width: '100%',
+            height: '100%',
+            display: 'block',
+            cursor: 'crosshair',
+            touchAction: 'none',
+          }}
+        />
+        {!hasDrawn && (
+          <div style={sketchHint}>
+            Sketch a quick note or diagram with your mouse or touch
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+const sketchCard: React.CSSProperties = {
+  borderRadius: 14,
+  background: 'rgba(15,23,42,0.82)',
+  border: '1px solid #1e293b',
+  overflow: 'hidden',
+  boxShadow: '0 12px 32px rgba(0,0,0,0.35)',
+};
+
+const sketchHeader: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  padding: '8px 12px',
+  borderBottom: '1px solid #1e293b',
+  background: 'rgba(15,23,42,0.6)',
+};
+
+const sketchLabel: React.CSSProperties = {
+  fontSize: 12,
+  fontWeight: 600,
+  color: '#cbd5e1',
+};
+
+const sketchClearBtn: React.CSSProperties = {
+  marginLeft: 6,
+  padding: '3px 9px',
+  borderRadius: 6,
+  border: '1px solid #334155',
+  background: '#1e293b',
+  color: '#cbd5e1',
+  fontSize: 11,
+  cursor: 'pointer',
+};
+
+const sketchHint: React.CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  pointerEvents: 'none',
+  fontSize: 12.5,
+  color: '#475569',
 };
