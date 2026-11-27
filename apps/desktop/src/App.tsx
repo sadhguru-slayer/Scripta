@@ -1594,9 +1594,8 @@ export default function App() {
       color,
       width,
       smoothness: settings.phoneSmoothness,
-      handwritingAssist: settings.handwritingAssist,
     });
-  }, [tool, color, width, phoneConnected, sendToMobile, settings.phoneSmoothness, settings.handwritingAssist]);
+  }, [tool, color, width, phoneConnected, sendToMobile, settings.phoneSmoothness]);
 
   // ── First-run tutorial ───────────────────────────────────────────────────
   useEffect(() => {
@@ -2038,7 +2037,7 @@ export default function App() {
         }
 
         s.points = beautifyStrokePoints(s.points, {
-          smoothness: settingsRef.current.handwritingAssist,
+          smoothness: settingsRef.current.phoneSmoothness,
           baseWidth: s.baseWidth / Math.max(0.2, cameraRef.current.zoom),
         });
         s.bounds = computeBounds(s.points);
@@ -2751,7 +2750,7 @@ export default function App() {
     if (activeLocalRef.current) {
       const finalized = activeLocalRef.current;
       finalized.points = beautifyStrokePoints(finalized.points, {
-        smoothness: settingsRef.current.handwritingAssist,
+        smoothness: settingsRef.current.phoneSmoothness,
         baseWidth: finalized.baseWidth / Math.max(0.2, cameraRef.current.zoom),
       });
       finalized.bounds = computeBounds(finalized.points);

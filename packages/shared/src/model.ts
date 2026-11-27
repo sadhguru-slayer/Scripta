@@ -121,11 +121,8 @@ export interface CursorSlideResult {
   settled: boolean;
 }
 
-/** Default phone input smoothing (0 = raw, 100 = maximum). */
-export const DEFAULT_PHONE_SMOOTHNESS = 40;
-
-/** Default post-stroke handwriting assistance (0 = off, 100 = maximum). */
-export const DEFAULT_HANDWRITING_ASSIST = 55;
+/** Default handwriting assistance / smoothing (0 = raw, 100 = maximum). */
+export const DEFAULT_PHONE_SMOOTHNESS = 35;
 
 /** Default cursor glide time constant in milliseconds. */
 export const DEFAULT_CURSOR_GLIDE_MS = 38;

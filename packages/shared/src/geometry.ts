@@ -110,8 +110,8 @@ export function filterOneEuroPoint(
 
   const speed = Math.hypot(edx, edy) / safeScale;
   const t = s / 100;
-  const minCutoff = 4.2 - 3.55 * Math.pow(t, 0.85);
-  const beta = 1.8 + (1 - t) * 2.5;
+  const minCutoff = 7.5 - 6.0 * Math.pow(t, 0.9);
+  const beta = 3.0 + (1 - t) * 3.5;
   const cutoff = minCutoff + beta * speed;
   const alpha = oneEuroAlpha(cutoff, dtSec);
 
@@ -194,14 +194,14 @@ export function beautifyStrokePoints(
   }
 
   const t = s / 100;
-  const baseEps = Math.max(0.25, baseWidth * 0.14);
-  const sizeEps = Math.min(2.6, arcLen * 0.004);
-  const eps = options?.tolerance ?? Math.max(baseEps, sizeEps) * (0.3 + 0.9 * t);
+  const baseEps = Math.max(0.15, baseWidth * 0.08);
+  const sizeEps = Math.min(1.4, arcLen * 0.002);
+  const eps = options?.tolerance ?? Math.max(baseEps, sizeEps) * (0.2 + 0.75 * t);
   let pts = rdpSimplify(points, eps * eps);
   if (pts.length <= 2) return pts;
 
-  const passes = s >= 70 ? 3 : s >= 35 ? 2 : 1;
-  const weight = 0.22 + 0.28 * t;
+  const passes = s >= 75 ? 2 : 1;
+  const weight = 0.08 + 0.18 * t;
 
   for (let pass = 0; pass < passes; pass++) {
     const next: StrokePoint[] = [pts[0]];
@@ -223,13 +223,13 @@ export function beautifyStrokePoints(
       }
 
       const cosTheta = (v1x * v2x + v1y * v2y) / (l1 * l2);
-      // Preserve intentional sharp corners (> ~63 deg turn)
-      if (cosTheta < 0.45) {
+      // Preserve intentional sharp corners (> ~56 deg turn)
+      if (cosTheta < 0.55) {
         next.push(cur);
         continue;
       }
 
-      const cornerFactor = (cosTheta - 0.45) / 0.55;
+      const cornerFactor = (cosTheta - 0.55) / 0.45;
       const alpha = weight * cornerFactor;
       const avgX = 0.5 * (prev.x + nxt.x);
       const avgY = 0.5 * (prev.y + nxt.y);

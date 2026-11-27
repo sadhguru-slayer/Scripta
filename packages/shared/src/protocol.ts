@@ -67,10 +67,8 @@ export type DesktopToMobileMessage =
         tool: ToolType;
         color: string;
         width: number;
-        /** Phone input smoothing 0-100; mobile mirrors it in its local ink preview. */
+        /** Handwriting assistance / smoothing 0-100; mobile mirrors it in its local ink preview. */
         smoothness?: number;
-        /** Post-stroke handwriting assistance 0-100; mobile mirrors it in its local ink preview. */
-        handwritingAssist?: number;
       }
     >
   /** Tells mobile the current cursor interaction mode so FAB icon can update. */

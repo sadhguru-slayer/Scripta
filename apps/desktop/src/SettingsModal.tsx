@@ -1,6 +1,5 @@
 import {
   DEFAULT_CURSOR_GLIDE_MS,
-  DEFAULT_HANDWRITING_ASSIST,
   DEFAULT_PHONE_SMOOTHNESS,
   DEFAULT_WRITING_WINDOW_RATIO,
 } from '@scripta/shared';
@@ -14,19 +13,11 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-const SMOOTHNESS_PRESETS = [
-  { label: 'Off', value: 0 },
-  { label: 'Low', value: 25 },
-  { label: 'Medium', value: 45 },
-  { label: 'High', value: 70 },
-  { label: 'Max', value: 100 },
-];
-
 const ASSIST_PRESETS = [
   { label: 'Off', value: 0 },
-  { label: 'Light', value: 30 },
-  { label: 'Balanced', value: 55 },
-  { label: 'Strong', value: 80 },
+  { label: 'Light', value: 20 },
+  { label: 'Balanced', value: 35 },
+  { label: 'Strong', value: 65 },
   { label: 'Max', value: 100 },
 ];
 
@@ -47,7 +38,6 @@ const RATIO_PRESETS = [
 
 export function SettingsModal({ settings, onChange, onReset, onClose }: SettingsModalProps) {
   const setSmoothness = (value: number) => onChange({ ...settings, phoneSmoothness: value });
-  const setAssist = (value: number) => onChange({ ...settings, handwritingAssist: value });
   const setGlide = (value: number) => onChange({ ...settings, cursorGlideMs: value });
   const setRatio = (value: number) => onChange({ ...settings, writingWindowRatio: value });
 
@@ -71,9 +61,9 @@ export function SettingsModal({ settings, onChange, onReset, onClose }: Settings
         <section style={section}>
           <div style={rowBetween}>
             <div>
-              <div style={labelStyle}>Phone input smoothing</div>
+              <div style={labelStyle}>Handwriting assistance</div>
               <div style={hintStyle}>
-                Higher values reduce hand jitter but add a little lag. Applies live to all phone strokes.
+                Gently stabilizes touch jitter and neatens completed strokes while keeping sharp letter corners crisp.
               </div>
             </div>
             <span style={valueBadge}>{settings.phoneSmoothness}%</span>
@@ -86,10 +76,10 @@ export function SettingsModal({ settings, onChange, onReset, onClose }: Settings
             value={settings.phoneSmoothness}
             onChange={(e) => setSmoothness(Number(e.target.value))}
             style={slider}
-            aria-label="Phone input smoothing"
+            aria-label="Handwriting assistance"
           />
           <div style={presetRow}>
-            {SMOOTHNESS_PRESETS.map((p) => (
+            {ASSIST_PRESETS.map((p) => (
               <button
                 key={p.label}
                 onClick={() => setSmoothness(p.value)}
@@ -99,40 +89,6 @@ export function SettingsModal({ settings, onChange, onReset, onClose }: Settings
               </button>
             ))}
             <span style={defaultHint}>Default {DEFAULT_PHONE_SMOOTHNESS}%</span>
-          </div>
-        </section>
-
-        <section style={section}>
-          <div style={rowBetween}>
-            <div>
-              <div style={labelStyle}>Handwriting assistance</div>
-              <div style={hintStyle}>
-                Neatens completed strokes and smooths curves while keeping sharp letter corners crisp.
-              </div>
-            </div>
-            <span style={valueBadge}>{settings.handwritingAssist}%</span>
-          </div>
-          <input
-            type="range"
-            min={0}
-            max={100}
-            step={5}
-            value={settings.handwritingAssist}
-            onChange={(e) => setAssist(Number(e.target.value))}
-            style={slider}
-            aria-label="Handwriting assistance"
-          />
-          <div style={presetRow}>
-            {ASSIST_PRESETS.map((p) => (
-              <button
-                key={p.label}
-                onClick={() => setAssist(p.value)}
-                style={pill(settings.handwritingAssist === p.value)}
-              >
-                {p.label}
-              </button>
-            ))}
-            <span style={defaultHint}>Default {DEFAULT_HANDWRITING_ASSIST}%</span>
           </div>
         </section>
 
