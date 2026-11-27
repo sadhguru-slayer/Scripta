@@ -5,6 +5,7 @@ import {
   beautifyStrokePoints,
   buildStrokePath2D,
   computeBounds,
+  computeEdgeScrollVelocity,
   computeFitCamera,
   computeWritingWindow,
   createOneEuroState,
@@ -429,5 +430,63 @@ describe('hitTestStroke / computeFitCamera', () => {
 
     // Smoothness 0 returns copy unchanged
     expect(beautifyStrokePoints(cornerPts, { smoothness: 0, baseWidth: 3 })).toEqual(cornerPts);
+  });
+
+  it('computeEdgeScrollVelocity protects mid-phone writing near PC edges and allows intentional bezel drags', () => {
+    // Writing in middle of phone when PC cursor is at right PC edge -> no scroll
+    expect(
+      computeEdgeScrollVelocity({
+        mode: 'phone_draw',
+        screenX: 1275,
+        screenY: 360,
+        viewportW: 1280,
+        viewportH: 720,
+        phoneStartNorm: { x: 0.45, y: 0.5 },
+        phoneCurNorm: { x: 0.52, y: 0.5 },
+        strokeDtMs: 350,
+        strokePointCount: 12,
+      }),
+    ).toEqual({ vx: 0, vy: 0 });
+
+    // Starting on left margin of phone (0.04) -> no accidental left-edge scroll
+    expect(
+      computeEdgeScrollVelocity({
+        mode: 'phone_draw',
+        screenX: 600,
+        screenY: 360,
+        viewportW: 1280,
+        viewportH: 720,
+        phoneStartNorm: { x: 0.04, y: 0.5 },
+        phoneCurNorm: { x: 0.01, y: 0.5 },
+        strokeDtMs: 350,
+        strokePointCount: 12,
+      }),
+    ).toEqual({ vx: 0, vy: 0 });
+
+    // Starting inside (0.3, 0.5) and dragging into right bezel (0.985) after >= 200ms -> scrolls right
+    const rightDrag = computeEdgeScrollVelocity({
+      mode: 'phone_draw',
+      screenX: 600,
+      screenY: 360,
+      viewportW: 1280,
+      viewportH: 720,
+      phoneStartNorm: { x: 0.3, y: 0.5 },
+      phoneCurNorm: { x: 0.985, y: 0.5 },
+      strokeDtMs: 350,
+      strokePointCount: 12,
+    });
+    expect(rightDrag.vx).toBeGreaterThan(0);
+    expect(rightDrag.vy).toBe(0);
+
+    // Move mode (Ctrl / 2-hand glide) near PC edge -> scrolls view
+    const moveLeft = computeEdgeScrollVelocity({
+      mode: 'remote_move',
+      screenX: 12,
+      screenY: 360,
+      viewportW: 1280,
+      viewportH: 720,
+    });
+    expect(moveLeft.vx).toBeLessThan(0);
+    expect(moveLeft.vy).toBe(0);
   });
 });

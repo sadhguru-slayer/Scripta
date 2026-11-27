@@ -599,3 +599,80 @@ export function renderSmoothStroke(
   ctx.stroke();
   ctx.restore();
 }
+
+export interface EdgeScrollInput {
+  mode: 'phone_draw' | 'remote_move' | 'local_draw';
+  /** Current cursor position in desktop screen CSS pixels. */
+  screenX: number;
+  screenY: number;
+  viewportW: number;
+  viewportH: number;
+  /** For 'phone_draw': normalized start point [0..1] and current raw point [0..1]. */
+  phoneStartNorm?: Point2D;
+  phoneCurNorm?: Point2D;
+  /** Elapsed stroke ms and point count for 'phone_draw'. */
+  strokeDtMs?: number;
+  strokePointCount?: number;
+}
+
+/**
+ * Computes continuous edge-scroll velocity (in desktop CSS px/s) for:
+ * - `remote_move` / `local_draw`: smooth scrolling within 48px of any PC viewport edge.
+ * - `phone_draw`: ignores PC viewport edges to protect normal handwriting; only scrolls
+ *   when a stroke started inside the safe interior [0.08, 0.92], has >= 3 points and
+ *   >= 200ms elapsed, and is deliberately dragged into the outer 2.5% phone bezel.
+ */
+export function computeEdgeScrollVelocity(input: EdgeScrollInput): { vx: number; vy: number } {
+  const maxSpeedPx = 480;
+
+  if (input.mode === 'phone_draw') {
+    const start = input.phoneStartNorm;
+    const cur = input.phoneCurNorm;
+    if (
+      !start ||
+      !cur ||
+      (input.strokePointCount ?? 0) < 3 ||
+      (input.strokeDtMs ?? 0) < 200
+    ) {
+      return { vx: 0, vy: 0 };
+    }
+
+    const safeMin = 0.08;
+    const safeMax = 0.92;
+    const bezel = 0.025;
+    let vx = 0;
+    let vy = 0;
+
+    if (start.x >= safeMin && cur.x < bezel) {
+      vx = -Math.min(1, Math.max(0, (bezel - cur.x) / bezel)) * maxSpeedPx;
+    } else if (start.x <= safeMax && cur.x > 1 - bezel) {
+      vx = Math.min(1, Math.max(0, (cur.x - (1 - bezel)) / bezel)) * maxSpeedPx;
+    }
+
+    if (start.y >= safeMin && cur.y < bezel) {
+      vy = -Math.min(1, Math.max(0, (bezel - cur.y) / bezel)) * maxSpeedPx;
+    } else if (start.y <= safeMax && cur.y > 1 - bezel) {
+      vy = Math.min(1, Math.max(0, (cur.y - (1 - bezel)) / bezel)) * maxSpeedPx;
+    }
+
+    return { vx, vy };
+  }
+
+  const edgeMargin = 48;
+  let vx = 0;
+  let vy = 0;
+
+  if (input.screenX < edgeMargin) {
+    vx = -Math.min(1, Math.max(0, (edgeMargin - input.screenX) / edgeMargin)) * maxSpeedPx;
+  } else if (input.screenX > input.viewportW - edgeMargin) {
+    vx = Math.min(1, Math.max(0, (input.screenX - (input.viewportW - edgeMargin)) / edgeMargin)) * maxSpeedPx;
+  }
+
+  if (input.screenY < edgeMargin) {
+    vy = -Math.min(1, Math.max(0, (edgeMargin - input.screenY) / edgeMargin)) * maxSpeedPx;
+  } else if (input.screenY > input.viewportH - edgeMargin) {
+    vy = Math.min(1, Math.max(0, (input.screenY - (input.viewportH - edgeMargin)) / edgeMargin)) * maxSpeedPx;
+  }
+
+  return { vx, vy };
+}

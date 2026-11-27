@@ -8,6 +8,7 @@ import {
   computeBoardBounds,
   computeBounds,
   computeConnectorBounds,
+  computeEdgeScrollVelocity,
   computeFitCamera,
   computeShapeBounds,
   computeWritingWindow,
@@ -322,6 +323,7 @@ export default function App() {
   const settingsRef            = useRef<AppSettings>(settings);
   const remoteSmoothNormRef    = useRef<Map<string, OneEuroState>>(new Map());
   const remoteLastRawPointRef  = useRef<Map<string, StrokePoint>>(new Map());
+  const remoteStartRawPointRef = useRef<Map<string, Point2D>>(new Map());
   const suppressTutorialRef    = useRef(false);
   const modalOpenRef           = useRef(false);
   toolRef.current           = tool;
@@ -792,6 +794,117 @@ export default function App() {
     lastFrameTsRef.current = now;
 
     let cursorAnimating = false;
+    let edgeScrolling = false;
+
+    const hasActiveRemoteMove =
+      remotePrevNormRef.current.size > 0 && (modHeldRef.current || toolRef.current === 'select');
+    const hasActiveLocalDraw =
+      activeLocalRef.current !== null || activeLocalDraftRef.current !== null;
+    const hasActiveRemoteDraw = activeRemoteRef.current.size > 0;
+
+    if (hasActiveRemoteMove || hasActiveLocalDraw || hasActiveRemoteDraw) {
+      const cam = cameraRef.current;
+      const vw = vpWidthRef.current;
+      const vh = vpHeightRef.current;
+      const cur = cursorTargetWorldRef.current;
+      const sx = (cur.x - cam.x) * cam.zoom;
+      const sy = (cur.y - cam.y) * cam.zoom;
+
+      let vx = 0;
+      let vy = 0;
+
+      if (hasActiveRemoteMove) {
+        const res = computeEdgeScrollVelocity({
+          mode: 'remote_move',
+          screenX: sx,
+          screenY: sy,
+          viewportW: vw,
+          viewportH: vh,
+        });
+        vx = res.vx;
+        vy = res.vy;
+      } else if (hasActiveLocalDraw) {
+        const res = computeEdgeScrollVelocity({
+          mode: 'local_draw',
+          screenX: sx,
+          screenY: sy,
+          viewportW: vw,
+          viewportH: vh,
+        });
+        vx = res.vx;
+        vy = res.vy;
+      } else if (hasActiveRemoteDraw) {
+        for (const [strokeId, s] of activeRemoteRef.current.entries()) {
+          const lastPt = s.points[s.points.length - 1];
+          const res = computeEdgeScrollVelocity({
+            mode: 'phone_draw',
+            screenX: sx,
+            screenY: sy,
+            viewportW: vw,
+            viewportH: vh,
+            phoneStartNorm: remoteStartRawPointRef.current.get(strokeId),
+            phoneCurNorm: remoteLastRawPointRef.current.get(strokeId),
+            strokeDtMs: lastPt?.dt ?? 0,
+            strokePointCount: s.points.length,
+          });
+          if (Math.abs(res.vx) > Math.abs(vx)) vx = res.vx;
+          if (Math.abs(res.vy) > Math.abs(vy)) vy = res.vy;
+        }
+      }
+
+      if (vx !== 0 || vy !== 0) {
+        const dtSec = dtMs / 1000;
+        const panDx = (vx * dtSec) / cam.zoom;
+        const panDy = (vy * dtSec) / cam.zoom;
+        cam.x += panDx;
+        cam.y += panDy;
+        cursorTargetWorldRef.current.x += panDx;
+        cursorTargetWorldRef.current.y += panDy;
+        cursorDisplayWorldRef.current.x += panDx;
+        cursorDisplayWorldRef.current.y += panDy;
+        windowCenterRef.current.x += panDx;
+        windowCenterRef.current.y += panDy;
+
+        const nextWp = cursorTargetWorldRef.current;
+        for (const s of activeRemoteRef.current.values()) {
+          const last = s.points[s.points.length - 1];
+          if (!last || Math.hypot(nextWp.x - last.x, nextWp.y - last.y) >= 0.5) {
+            const pt: StrokePoint = {
+              x: nextWp.x,
+              y: nextWp.y,
+              p: last?.p ?? 0.5,
+              dt: (last?.dt ?? 0) + dtMs,
+            };
+            s.points.push(pt);
+            s.bounds = appendPointToBounds(s.bounds, pt);
+          }
+        }
+        if (activeLocalRef.current) {
+          const s = activeLocalRef.current;
+          const last = s.points[s.points.length - 1];
+          if (!last || Math.hypot(nextWp.x - last.x, nextWp.y - last.y) >= 0.5) {
+            const pt: StrokePoint = {
+              x: nextWp.x,
+              y: nextWp.y,
+              p: last?.p ?? 0.5,
+              dt: Date.now() - s.createdAt,
+            };
+            s.points.push(pt);
+            s.bounds = appendPointToBounds(s.bounds, pt);
+          }
+        }
+        if (activeLocalDraftRef.current) {
+          const d = activeLocalDraftRef.current;
+          if (d.kind === 'shape') d.current = { ...nextWp };
+          else d.end = snapLineEnd(d.start, nextWp, shiftHeldRef.current);
+        }
+
+        dirtyStaticRef.current = true;
+        dirtyActiveRef.current = true;
+        edgeScrolling = true;
+      }
+    }
+
     if (phoneConnectedRef.current) {
       const step = stepCursorPosition(
         cursorDisplayWorldRef.current,
@@ -826,6 +939,7 @@ export default function App() {
 
     if (
       cursorAnimating ||
+      edgeScrolling ||
       dirtyStaticRef.current ||
       dirtyActiveRef.current ||
       pendingAppendElsRef.current.length > 0
@@ -1321,6 +1435,7 @@ export default function App() {
       remotePrevNormRef.current.delete(drawKey(strokeId));
       remoteSmoothNormRef.current.delete(strokeId);
       remoteLastRawPointRef.current.delete(strokeId);
+      remoteStartRawPointRef.current.delete(strokeId);
       if (convertToMove && drawNorm) {
         remotePrevNormRef.current.set(strokeId, drawNorm);
       }
@@ -1331,6 +1446,7 @@ export default function App() {
       remotePrevNormRef.current.delete(drawKey(strokeId));
       remoteSmoothNormRef.current.delete(strokeId);
       remoteLastRawPointRef.current.delete(strokeId);
+      remoteStartRawPointRef.current.delete(strokeId);
       if (convertToMove && drawNorm) {
         remotePrevNormRef.current.set(strokeId, drawNorm);
       }
@@ -1370,6 +1486,7 @@ export default function App() {
     remotePrevNormRef.current.clear();
     remoteSmoothNormRef.current.clear();
     remoteLastRawPointRef.current.clear();
+    remoteStartRawPointRef.current.clear();
     sendToMobile('desktop.cursor', { mode: 'draw' });
     scheduleRender({ active: true });
   }, [sendToMobile, scheduleRender]);
@@ -1578,6 +1695,7 @@ export default function App() {
           remotePrevNormRef.current.clear();
           remoteSmoothNormRef.current.clear();
           remoteLastRawPointRef.current.clear();
+          remoteStartRawPointRef.current.clear();
           snapPreviewRef.current = null;
           scheduleRender({ active: true });
         }
@@ -1624,6 +1742,7 @@ export default function App() {
         remotePrevNormRef.current.set(drawKey(strokeId), { x: point.x, y: point.y });
         remoteSmoothNormRef.current.set(strokeId, createOneEuroState({ x: point.x, y: point.y }, point.dt));
         remoteLastRawPointRef.current.set(strokeId, point);
+        remoteStartRawPointRef.current.set(strokeId, { x: point.x, y: point.y });
 
         if (activeTool === 'eraser') {
           const buf: ErasedEntry[] = [];
@@ -1824,6 +1943,7 @@ export default function App() {
         const filterState = remoteSmoothNormRef.current.get(strokeId);
         remoteSmoothNormRef.current.delete(strokeId);
         remoteLastRawPointRef.current.delete(strokeId);
+        remoteStartRawPointRef.current.delete(strokeId);
 
         if (wasMoveGesture) {
           if (moveMeta && moveMeta.maxDistSq < 0.0004 && Date.now() - moveMeta.startedAt < 320) {
@@ -1947,6 +2067,7 @@ export default function App() {
         remotePrevNormRef.current.delete(drawKey(strokeId));
         remoteSmoothNormRef.current.delete(strokeId);
         remoteLastRawPointRef.current.delete(strokeId);
+        remoteStartRawPointRef.current.delete(strokeId);
         const erased = erasingRemoteRef.current.get(strokeId);
         if (erased && erased.length > 0) {
           for (let i = erased.length - 1; i >= 0; i--) {
