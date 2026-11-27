@@ -792,127 +792,6 @@ export default function App() {
     lastFrameTsRef.current = now;
 
     let cursorAnimating = false;
-    let edgeScrolling = false;
-
-    const hasActiveRemoteDraw =
-      activeRemoteRef.current.size > 0 ||
-      activeRemoteDraftRef.current.size > 0 ||
-      erasingRemoteRef.current.size > 0;
-    const hasActiveRemoteMove =
-      remotePrevNormRef.current.size > 0 && (modHeldRef.current || toolRef.current === 'select');
-    const hasActiveLocalDraw =
-      activeLocalRef.current !== null || activeLocalDraftRef.current !== null;
-
-    if (hasActiveRemoteDraw || hasActiveRemoteMove || hasActiveLocalDraw) {
-      const cam = cameraRef.current;
-      const vw = vpWidthRef.current;
-      const vh = vpHeightRef.current;
-      const cur = cursorTargetWorldRef.current;
-      const sx = (cur.x - cam.x) * cam.zoom;
-      const sy = (cur.y - cam.y) * cam.zoom;
-      const edgeMargin = 48;
-      const maxSpeedPx = 520;
-
-      let vx = 0;
-      let vy = 0;
-      // Only trigger PC-viewport edge scrolling for cursor move mode (Ctrl / 2-hand glide)
-      // or local mouse drawing — NOT when writing in the middle of the phone pad.
-      if (hasActiveRemoteMove || hasActiveLocalDraw) {
-        if (sx < edgeMargin) {
-          vx = -Math.min(1, Math.max(0, (edgeMargin - sx) / edgeMargin)) * maxSpeedPx;
-        } else if (sx > vw - edgeMargin) {
-          vx = Math.min(1, Math.max(0, (sx - (vw - edgeMargin)) / edgeMargin)) * maxSpeedPx;
-        }
-        if (sy < edgeMargin) {
-          vy = -Math.min(1, Math.max(0, (edgeMargin - sy) / edgeMargin)) * maxSpeedPx;
-        } else if (sy > vh - edgeMargin) {
-          vy = Math.min(1, Math.max(0, (sy - (vh - edgeMargin)) / edgeMargin)) * maxSpeedPx;
-        }
-      }
-
-      // Scroll & extend line during phone drawing only when stylus/finger is deliberately held
-      // against the very edge of the phone pad (<= 2.5% from edge, after >= 220ms of drawing).
-      if (hasActiveRemoteDraw) {
-        const phoneEdge = 0.025;
-        for (const [strokeId, s] of activeRemoteRef.current.entries()) {
-          const lastPt = s.points[s.points.length - 1];
-          if (!lastPt || s.points.length < 2 || lastPt.dt < 220) continue;
-          const raw = remoteLastRawPointRef.current.get(strokeId);
-          if (!raw) continue;
-          if (raw.x < phoneEdge) {
-            const pvx = -Math.min(1, Math.max(0, (phoneEdge - raw.x) / phoneEdge)) * maxSpeedPx;
-            if (Math.abs(pvx) > Math.abs(vx)) vx = pvx;
-          } else if (raw.x > 1 - phoneEdge) {
-            const pvx = Math.min(1, Math.max(0, (raw.x - (1 - phoneEdge)) / phoneEdge)) * maxSpeedPx;
-            if (Math.abs(pvx) > Math.abs(vx)) vx = pvx;
-          }
-          if (raw.y < phoneEdge) {
-            const pvy = -Math.min(1, Math.max(0, (phoneEdge - raw.y) / phoneEdge)) * maxSpeedPx;
-            if (Math.abs(pvy) > Math.abs(vy)) vy = pvy;
-          } else if (raw.y > 1 - phoneEdge) {
-            const pvy = Math.min(1, Math.max(0, (raw.y - (1 - phoneEdge)) / phoneEdge)) * maxSpeedPx;
-            if (Math.abs(pvy) > Math.abs(vy)) vy = pvy;
-          }
-        }
-      }
-
-      if (vx !== 0 || vy !== 0) {
-        const dtSec = dtMs / 1000;
-        const panDx = (vx * dtSec) / cam.zoom;
-        const panDy = (vy * dtSec) / cam.zoom;
-        cam.x += panDx;
-        cam.y += panDy;
-        cursorTargetWorldRef.current.x += panDx;
-        cursorTargetWorldRef.current.y += panDy;
-        cursorDisplayWorldRef.current.x += panDx;
-        cursorDisplayWorldRef.current.y += panDy;
-        windowCenterRef.current.x += panDx;
-        windowCenterRef.current.y += panDy;
-
-        const nextWp = cursorTargetWorldRef.current;
-        for (const s of activeRemoteRef.current.values()) {
-          const last = s.points[s.points.length - 1];
-          if (!last || Math.hypot(nextWp.x - last.x, nextWp.y - last.y) >= 0.5) {
-            const pt: StrokePoint = {
-              x: nextWp.x,
-              y: nextWp.y,
-              p: last?.p ?? 0.5,
-              dt: (last?.dt ?? 0) + dtMs,
-            };
-            s.points.push(pt);
-            s.bounds = appendPointToBounds(s.bounds, pt);
-          }
-        }
-        if (activeLocalRef.current) {
-          const s = activeLocalRef.current;
-          const last = s.points[s.points.length - 1];
-          if (!last || Math.hypot(nextWp.x - last.x, nextWp.y - last.y) >= 0.5) {
-            const pt: StrokePoint = {
-              x: nextWp.x,
-              y: nextWp.y,
-              p: last?.p ?? 0.5,
-              dt: Date.now() - s.createdAt,
-            };
-            s.points.push(pt);
-            s.bounds = appendPointToBounds(s.bounds, pt);
-          }
-        }
-        for (const d of activeRemoteDraftRef.current.values()) {
-          if (d.kind === 'shape') d.current = { ...nextWp };
-          else d.end = snapLineEnd(d.start, nextWp, shiftHeldRef.current);
-        }
-        if (activeLocalDraftRef.current) {
-          const d = activeLocalDraftRef.current;
-          if (d.kind === 'shape') d.current = { ...nextWp };
-          else d.end = snapLineEnd(d.start, nextWp, shiftHeldRef.current);
-        }
-
-        dirtyStaticRef.current = true;
-        dirtyActiveRef.current = true;
-        edgeScrolling = true;
-      }
-    }
-
     if (phoneConnectedRef.current) {
       const step = stepCursorPosition(
         cursorDisplayWorldRef.current,
@@ -947,7 +826,6 @@ export default function App() {
 
     if (
       cursorAnimating ||
-      edgeScrolling ||
       dirtyStaticRef.current ||
       dirtyActiveRef.current ||
       pendingAppendElsRef.current.length > 0
@@ -1372,7 +1250,7 @@ export default function App() {
     scheduleSave();
   }, [scheduleRender, scheduleSave]);
 
-  const autoPanToWorldPoint = useCallback((pt: Point2D, margin = 24): boolean => {
+  const autoPanToWorldPoint = useCallback((pt: Point2D, margin = 56): boolean => {
     const cam    = cameraRef.current;
     const w      = vpWidthRef.current;
     const h      = vpHeightRef.current;
@@ -1430,8 +1308,8 @@ export default function App() {
     windowCenterRef.current.y      += dy;
     needsWindowAlignRef.current     = true;
 
-    // Hard-clamp only if a large jump goes past the edge; smooth continuous edge-scroll runs in rAF.
-    const margin = 6;
+    // In move or select mode, let the cursor reach over the top/bottom toolbars (6px edge margin).
+    const margin = (modHeldRef.current || toolRef.current === 'select') ? 6 : 56;
     const panned = autoPanToWorldPoint(cursorTargetWorldRef.current, margin);
     scheduleRender({ static: panned, active: true });
   }, [autoPanToWorldPoint, scheduleRender]);
